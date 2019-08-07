@@ -1,0 +1,5 @@
+# Ignore subfolders (e.g. from output)
+*/*
+
+# Ignore the config file
+*.txt
