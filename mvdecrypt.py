@@ -3,23 +3,26 @@ mvdecrypt.py
 
 Usage:
     1. Ensure you have python 3
-    2. Look inside <game_dir>/www/data/System.json  (tip: jsonlint.com)
-    3. Inside the file, near the end, there is a "encryptionKey" value. Copy.
-    4. Paste the encryptionKey value below where it says KEY. Keep the quotes.
-    5. Move this file into the same folder where the .rpgmvp files are kept.
-    6. From terminal (command prompt), run this script.
+    2. Move this file into the same folder where the .rpgmvp files are kept.
+    3. From terminal (command prompt), run this script.
         For Command Prompt on Windows, type:
             python mvdecrypt.py
+    4. Files will be placed inside a folder called "decrypted".
 """
 
-# For RJ248754
-KEY = "d14c2267d848abeb81fd590f371d39bd"
-
+# Name of folder to put decrypted files in
 OUTDIR = 'decrypted'
+
+
+
+import json
+import os
+from threading import Thread
+
 PROCESS_EXT = 'rpgmvp'
 OUTPUT_EXT = 'png'
 
-import os
+CWD = None
 
 
 def chunkify(it, chunk_size):
@@ -34,6 +37,53 @@ def toBigram(s):
     If length of sequence s is odd, the final list will have one element only.
     """
     return [x for x in chunkify(s, 2)]
+
+
+def getRootDir():
+    # Backtrack through file structure to root dir
+    global CWD
+
+    if CWD is not None:
+        return CWD
+
+    psplit = os.path.split
+    pjoin = os.path.join
+    pexists = os.path.exists
+
+    path = os.getcwd()
+
+    while not pexists(pjoin(path, 'Game.exe')):
+        path = pjoin(psplit(path)[:-1])
+        if not any(path):
+            raise RuntimeError('Could not find root dir containing Game.exe')
+
+    print(f'Detected root dir at {path}')
+    CWD = path
+    return CWD
+
+
+def getKey():
+    route = ['www', 'data', 'System.json']
+    path = os.path.join(getRootDir(), *route)
+
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            system = json.load(f)
+
+        return system['encryptionKey']
+
+    except BaseException as e:
+        cls, msg = e.__class__.__name__, str(e)
+        raise RuntimeError(f'Failed to find encryption key ({cls}: {msg})')
+
+
+def getFiles():
+    route = ['www', 'img', 'pictures']
+    path = os.path.join(getRootDir(), *route)
+    files = filter(lambda s: s.endswith(PROCESS_EXT), os.listdir(path))
+    files = [os.path.join(path, fn) for fn in files]
+    return files
+
 
 
 class Decryptor():
@@ -115,11 +165,11 @@ class Decryptor():
         return byteArray
 
 
-    def decryptFile(self, fileName, outputExt=OUTPUT_EXT):
-        newfn = os.path.join(OUTDIR,
-                             fileName.replace(PROCESS_EXT, OUTPUT_EXT))
+    def decryptFile(self, filePath, outputExt=OUTPUT_EXT):
+        newfn = os.path.basename(filePath).replace(PROCESS_EXT, OUTPUT_EXT)
+        newfn = os.path.join(getRootDir(), OUTDIR, newfn)
 
-        with open(fileName, 'rb') as f:
+        with open(filePath, 'rb') as f:
             ba = bytearray(f.read())
             clear = self.decrypt(ba, True)
 
@@ -129,12 +179,28 @@ class Decryptor():
         return newfn
 
 
+def worker(decryptor, fn):
+    outfile = decryptor.decryptFile(fn)
+    print('  wrote', outfile)
+
+
 if __name__ == '__main__':
+    key = getKey()
+    print(f'Using key {key}')
 
-    files = filter(lambda s: s.endswith(PROCESS_EXT), os.listdir('.'))
+    dec = Decryptor(key)
 
-    dec = Decryptor(KEY)
+    if not os.path.exists(OUTDIR):
+        os.mkdir(OUTDIR)
 
+    files = getFiles()
+    threads = []
     for fn in files:
-        newfn = dec.decryptFile(fn)
-        print('  wrote', newfn)
+        t = Thread(target=worker, name=fn, args=(dec, fn))
+        threads.append(t)
+
+    for t in threads:
+        t.start()
+
+    for t in threads:
+        t.join()
