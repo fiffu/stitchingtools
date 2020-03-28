@@ -16,6 +16,7 @@ OUTDIR = 'decrypted'
 
 
 import json
+from glob import glob
 import os
 from threading import Thread
 
@@ -52,10 +53,11 @@ def getRootDir():
 
     path = os.getcwd()
 
-    while not pexists(pjoin(path, 'Game.exe')):
+    while not glob(pjoin(path, '*.exe')):
         path = pjoin(psplit(path)[:-1])
         if not any(path):
-            raise RuntimeError('Could not find root dir containing Game.exe')
+            raise RuntimeError('Could not find root dir containing game '
+                               'executable')
 
     print(f'Detected root dir at {path}')
     CWD = path
