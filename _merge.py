@@ -21,7 +21,10 @@ Hacking this script:
       directly on every layer before/after compositing (like cropping).
 """
 
+from argparse import ArgumentParser
+from enum import Enum
 import os
+import time
 
 from blend_modes import multiply  # pip install blend_modes
 import numpy  # blend_modes depends on matrices
@@ -58,35 +61,69 @@ COUNT_FROM = 0
 
 
 
-def blend(base: Image, new: Image, opacity: float = 1) -> Image:
+# Enums
+class BlendMode(Enum):
+    ADD = 1
+    MULTIPLY = 2
+
+
+
+def blend_multiply(base: Image, new: Image, opacity: float = 1) -> Image:
     base_f = numpy.array(base).astype(float)
     new_f = numpy.array(new).astype(float)
     blended_f = multiply(base_f, new_f, opacity)
     return Image.fromarray(numpy.uint8(blended_f))
 
 
-def parse():
+def parse_line(line):
+    # Remove inline comments, if any
+    line, *comment = line.split(COMMENT_PREFIX, 1)
+    comment = comment[0] if comment else ''
+    line = line.strip()
+
+    # Blend mode
+    mode = BlendMode.ADD
+    if MULTIPLY_SUFFIX in line:
+        mode = BlendMode.MULTIPLY
+        line = line.replace(MULTIPLY_SUFFIX, '')
+
+    # Find offset in form @x,y
+    file, *offset = line.split('@', 1)
+    file = file.strip()
+
+    # Normalize offset to Tuple(Int)
+    if offset:
+        offset = offset[0].split(',', 1)
+        offset = tuple(int(o) for o in offset)
+    else:
+        offset = ()
+
+    return file + EXT if file else '', mode, offset, comment
+
+
+
+def parse(args):
     """Reads input file and parses into a list of layer stacks
 
     Output is a list of lists, each list containing layers to be merged.
     Input file must end with two newlines.
     """
-    with open(INPUT_FILE, 'r', encoding='utf-8') as f:
+    with open(args.input, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-
-    fnames = [line.strip() + EXT
-              for line in lines
-              if not line.startswith(COMMENT_PREFIX)]
 
     out = []
     buffer = []
-    for fn in fnames:
+    for fn in lines:
+        parsed = parse_line(fn)
+        file, *_, comment = parsed
+
         # Non-empty line: Add layer to image stack
-        if fn != EXT:
-            # Remove inline comments, if any
-            n, *comment = fn.split(COMMENT_PREFIX, 1)
-            n = n.strip()
-            buffer.append(n)
+        if file:
+            buffer.append(parsed)
+            continue
+
+        # Lines with comments only: avoid flushing the buffer
+        elif comment:
             continue
 
         # Empty line: flush buffered layers to output
@@ -94,23 +131,30 @@ def parse():
             continue
         out.append(list.copy(buffer))
         buffer = []
+
+    # Flush one last time
+    if buffer:
+        out.append(list.copy(buffer))
+
     return out
 
 
-def compose(i, fn_list):
+def compose(args, i, fn_list):
     """Merges the input stack of filenames
 
     fn_list is a list of filenames representing a group of layers.
     i is the ordinal of this current layer group in the current script run.
     """
     # Determine filename
-    i += COUNT_FROM
-    out_fn = f'{PREPEND}{i:0>3}.png'
-    out_path = os.path.join(OUT_DIR, out_fn)
+    i += args.countfrom
+    out_fn = f'{args.prefix}{i:0>3}{args.suffix}.png'
+
+    # Check for existing output target
+    out_path = os.path.join(args.outdir, out_fn)
     if os.path.exists(out_path):
-        if ON_CONFLICT is 'skip':
+        if args.skipconflict:
             print(f'{out_fn} exists, skipping')
-            return
+            return None
 
     # In input, lines are ordered in the order they're stacked, but when
     # iterating the file, we encounter the layers top-first.
@@ -118,44 +162,94 @@ def compose(i, fn_list):
     layers_bot_first = fn_list[::-1]
 
     # Prep first layer for compositing
-    base = Image.open(layers_bot_first[0]).convert('RGBA')
+    file, mode, offset, comment = layers_bot_first.pop(0)
+    base = Image.open(file).convert('RGBA')
 
     # Merge remaining layers into first layer
-    for file in layers_bot_first[1:]:
-        useblend = MULTIPLY_SUFFIX in file
-        L = Image.open(file.replace(MULTIPLY_SUFFIX, '')).convert('RGBA')
-        L = preprocess(L)
+    for file, mode, offset, comment in layers_bot_first:
+        multiply = mode == BlendMode.MULTIPLY
 
-        method = Image.alpha_composite
-        if useblend:
-            print('blend', L)
-            method = blend
+        L = Image.open(file).convert('RGBA')
 
-        base = method(base, L)
+        if multiply and offset:
+            print(f'{file}: multiply and offset not supported, skipping layer')
+            continue
 
-    # Postprocessing on composed base layer
-    base = postprocess(base)
+        if offset:
+            # 3rd arg for paste() uses L as alpha mask
+            print(f'pasting {file} @ {offset}')
+            base.paste(L, offset, L)
+
+        elif multiply:
+            print(f'multiplying {file}')
+            base = blend_multiply(base, L)
+
+        else:
+            base.alpha_composite(L)
 
     # Write
-    print(f'Writing {out_fn}...')
+    print(f'Writing {out_fn}...\n')
     base.save(out_path)
+    return out_path
 
-
-def preprocess(layer):
-    """Postprocessing step for each layer before compositing into base."""
-    return layer
-
-
-def postprocess(composited_base):
-    """Postprocessing step for each image after compositing layers."""
-    # return composited_base.crop((322, 0, 640, 480))
-    return composited_base
 
 
 if __name__ == '__main__':
-    # Prep dir for output
-    if not os.path.exists(OUT_DIR):
-        os.mkdir(OUT_DIR)
+    parser = ArgumentParser()
 
-    for i, grp in enumerate(parse()):
-        compose(i, grp)
+    parser.add_argument('-s', '--skipconflict',
+                        action='store_true',
+                        help='skip on conflict instead of overwrite if output '
+                             'file exists')
+
+    parser.add_argument('-c', '--countfrom',
+                        type=int,
+                        default=1,
+                        help='number for output files to start counting from; '
+                             'default=1')
+
+    parser.add_argument('-d', '--diff',
+                        action='store_true',
+                        help='open generated files when done')
+
+    parser.add_argument('-i', '--input',
+                        type=str,
+                        default='_info.txt',
+                        help="folder to store output files; default='_info.txt'")
+
+    parser.add_argument('-o', '--outdir',
+                        type=str,
+                        default='buffer',
+                        help="folder to store output files; default='buffer'")
+
+    parser.add_argument('-p', '--prefix',
+                        type=str,
+                        default='',
+                        help='optional prefix for output filenames')
+
+    parser.add_argument('-u', '--suffix',
+                        type=str,
+                        default='',
+                        help='optional suffix for output filenames')
+
+    args = parser.parse_args()
+
+    # Prep dir for output
+    if not os.path.exists(args.outdir):
+        os.mkdir(args.outdir)
+
+    new_files = []
+    for i, grp in enumerate(parse(args)):
+        file = compose(args, i, grp)
+        if file:
+            new_files.append(file)
+
+
+    while args.diff and new_files:
+        file = new_files.pop(0)
+        img = Image.open(file)
+        img.show()
+
+        if new_files:
+            time.sleep(0.5)
+
