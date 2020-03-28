@@ -31,10 +31,8 @@ import numpy  # blend_modes depends on matrices
 from PIL import Image  # pip install Pillow
 
 
-# File to read layer composition from. Images are layered and stacked in the
-# order they appear in this file. You specify the file extension of the input
-# images in this script so you don't have to repeat in in the input file.
-INPUT_FILE = '_info.txt'
+# Specify the file extension of the input images in this script so you don't
+# have to repeat in the input file.
 EXT = '.png'
 
 # Works just like a Python comment. Inline within a line of data is okay.
@@ -44,21 +42,6 @@ COMMENT_PREFIX = '#'
 # composited using a multiply blend mode instead of a regular overlap. It's
 # called a suffix but you can put this symbol anywhere in the filename.
 MULTIPLY_SUFFIX = '*'
-
-# Action to take in case the output file exists. Accepted values so far are
-# 'overwrite' and 'skip'
-ON_CONFLICT = 'overwrite'
-# ON_CONFLICT = 'skip'
-
-# Name of directory to put the composited images into
-OUT_DIR = "buffer"
-
-# A prefix to put in front of the generated filenames. Okay to leave blank.
-PREPEND = ''
-
-# A cardinal number to start counting up from in the generated filenames.
-COUNT_FROM = 0
-
 
 
 # Enums
@@ -197,39 +180,45 @@ def compose(args, i, fn_list):
 if __name__ == '__main__':
     parser = ArgumentParser()
 
-    parser.add_argument('-s', '--skipconflict',
+    parser.add_argument('-s', '--skip',
                         action='store_true',
-                        help='skip on conflict instead of overwrite if output '
-                             'file exists')
-
-    parser.add_argument('-c', '--countfrom',
-                        type=int,
-                        default=1,
-                        help='number for output files to start counting from; '
-                             'default=1')
+                        help='skip rather than overwrite if output file exists')
 
     parser.add_argument('-d', '--diff',
                         action='store_true',
                         help='open generated files when done')
 
-    parser.add_argument('-i', '--input',
+    parser.add_argument('--input',
                         type=str,
                         default='_info.txt',
-                        help="folder to store output files; default='_info.txt'")
+                        metavar='TXTFILE',
+                        help="input file; images will be stacked in the output "
+                             "in the order they appear in this file; "
+                             "default='_info.txt'")
 
-    parser.add_argument('-o', '--outdir',
+    parser.add_argument('--outdir',
                         type=str,
                         default='buffer',
+                        metavar='FOLDER',
                         help="folder to store output files; default='buffer'")
 
-    parser.add_argument('-p', '--prefix',
+    parser.add_argument('--countfrom',
+                        type=int,
+                        default=1,
+                        metavar='NUM',
+                        help='number for output files to start counting from; '
+                             'default=1')
+
+    parser.add_argument('--prefix',
                         type=str,
                         default='',
+                        metavar='STRING',
                         help='optional prefix for output filenames')
 
-    parser.add_argument('-u', '--suffix',
+    parser.add_argument('--suffix',
                         type=str,
                         default='',
+                        metavar='STRING',
                         help='optional suffix for output filenames')
 
     args = parser.parse_args()
@@ -252,4 +241,3 @@ if __name__ == '__main__':
 
         if new_files:
             time.sleep(0.5)
-
