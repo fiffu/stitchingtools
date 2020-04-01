@@ -1,24 +1,22 @@
 """
 Quick and dirty image composition script.
-Requires the `pillow` package (`pip install Pillow` -- not vanilla PIL!)
+Requires the `pillow` package (PIL fork) for image i/o.
+Requires the blend_mode and numpy packages for multiply blend modes.
 
 Usage:
-    python _merge.py
+    python _merge.py -h
 
 Steps:
     1. Ensure you are using Python 3.
-    2. Move this file to the same dir as the image files you want composited
-    3. Define layer files to be composited in the input file (_info.txt)
-         NOTE: Ensure your input file ends with at least 2 empty lines.
-    4. Take note of comments and multiply-mode notation (see docstrings)
-    5. Take note of optional settings like simple affixes etc.
-    6. Run this script:
-        python _merge.py
-    7. Composited files are deposited in the output directory
-
-Hacking this script:
-    - You can use the pre/postprocess functions to inject any changes you want
-      directly on every layer before/after compositing (like cropping).
+    2. Move this file to the same dir as the image files you want composited.
+    3. Define layer files to be composited in the input file (_info.txt by
+       default). The layers will be stacked in the order they appear in the
+       input file (preceding files overlay subsequent files).
+    4. Add a blank line to start a new stack.
+    5. Take note of comments and multiply-mode notation (see docstrings below).
+    6. Review optional args for running this script:
+         python _merge.py -h
+    7. Composited files are placed in the output directory (default: 'buffer').
 """
 
 from argparse import ArgumentParser
@@ -27,12 +25,12 @@ import os
 import time
 
 from blend_modes import multiply  # pip install blend_modes
-import numpy  # blend_modes depends on matrices
+import numpy  # blend_modes depends on matrices; pip install numpy
 from PIL import Image  # pip install Pillow
 
 
-# Specify the file extension of the input images in this script so you don't
-# have to repeat in the input file.
+# Specify the file extension of the input images expected by this script so you
+# don't have to repeat in in the input file.
 EXT = '.png'
 
 # Works just like a Python comment. Inline within a line of data is okay.
@@ -44,8 +42,8 @@ COMMENT_PREFIX = '#'
 MULTIPLY_SUFFIX = '*'
 
 
-# Enums
 class BlendMode(Enum):
+    """Enumerates available blend modes"""
     ADD = 1
     MULTIPLY = 2
 
@@ -129,8 +127,10 @@ def compose(args, i, fn_list):
     i is the ordinal of this current layer group in the current script run.
     """
     # Determine filename
-    i += args.countfrom
-    out_fn = f'{args.prefix}{i:0>3}{args.suffix}.png'
+    template = '{prefix}{i:0>%d}{suffix}.png' % (args.digits)
+    out_fn = template.format(prefix=args.prefix,
+                             i=i + args.countfrom,
+                             suffix=args.suffix)
 
     # Check for existing output target
     out_path = os.path.join(args.outdir, out_fn)
@@ -150,25 +150,25 @@ def compose(args, i, fn_list):
 
     # Merge remaining layers into first layer
     for file, mode, offset, comment in layers_bot_first:
-        multiply = mode == BlendMode.MULTIPLY
+        do_multiply = mode == BlendMode.MULTIPLY
 
-        L = Image.open(file).convert('RGBA')
+        layer = Image.open(file).convert('RGBA')
 
-        if multiply and offset:
+        if do_multiply and offset:
             print(f'{file}: multiply and offset not supported, skipping layer')
             continue
 
         if offset:
-            # 3rd arg for paste() uses L as alpha mask
+            # 3rd arg for paste() uses the layer as alpha mask
             print(f'pasting {file} @ {offset}')
-            base.paste(L, offset, L)
+            base.paste(layer, offset, layer)
 
-        elif multiply:
+        elif do_multiply:
             print(f'multiplying {file}')
-            base = blend_multiply(base, L)
+            base = blend_multiply(base, layer)
 
         else:
-            base.alpha_composite(L)
+            base.alpha_composite(layer)
 
     # Write
     print(f'Writing {out_fn}...\n')
@@ -176,49 +176,47 @@ def compose(args, i, fn_list):
     return out_path
 
 
-
-if __name__ == '__main__':
+def main():
     parser = ArgumentParser()
 
-    parser.add_argument('-s', '--skip',
+    parser.add_argument('-s', '--skipconflict',
                         action='store_true',
-                        help='skip rather than overwrite if output file exists')
+                        help='skip on conflict instead of overwrite if output '
+                             'file exists')
 
-    parser.add_argument('-d', '--diff',
+    parser.add_argument('-c', '--countfrom',
+                        type=int,
+                        default=0,
+                        help='number for output files to start counting from; '
+                             'default=0')
+
+    parser.add_argument('-d', '--digits',
+                        action='count',
+                        default=0,
+                        help='number of digits to zero-pad to; default=3 (-ddd)')
+
+    parser.add_argument('-D', '--diff',
                         action='store_true',
                         help='open generated files when done')
 
-    parser.add_argument('--input',
+    parser.add_argument('-i', '--input',
                         type=str,
                         default='_info.txt',
-                        metavar='TXTFILE',
-                        help="input file; images will be stacked in the output "
-                             "in the order they appear in this file; "
-                             "default='_info.txt'")
+                        help="folder to store output files; default='_info.txt'")
 
-    parser.add_argument('--outdir',
+    parser.add_argument('-o', '--outdir',
                         type=str,
                         default='buffer',
-                        metavar='FOLDER',
                         help="folder to store output files; default='buffer'")
 
-    parser.add_argument('--countfrom',
-                        type=int,
-                        default=1,
-                        metavar='NUM',
-                        help='number for output files to start counting from; '
-                             'default=1')
-
-    parser.add_argument('--prefix',
+    parser.add_argument('-p', '--prefix',
                         type=str,
                         default='',
-                        metavar='STRING',
                         help='optional prefix for output filenames')
 
-    parser.add_argument('--suffix',
+    parser.add_argument('-u', '--suffix',
                         type=str,
                         default='',
-                        metavar='STRING',
                         help='optional suffix for output filenames')
 
     args = parser.parse_args()
@@ -235,9 +233,16 @@ if __name__ == '__main__':
 
 
     while args.diff and new_files:
+        print()
+        print('Showing output files -- Ctrl-C to quit')
         file = new_files.pop(0)
         img = Image.open(file)
         img.show()
 
         if new_files:
+            # Give time for user to press the interrupt
             time.sleep(0.5)
+
+
+if __name__ == '__main__':
+    main()
