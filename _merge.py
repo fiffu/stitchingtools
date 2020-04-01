@@ -92,15 +92,15 @@ def parse(args):
     with open(args.input, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
-    out = []
-    buffer = []
+    stacks = []
+    stack = []
     for fn in lines:
         parsed = parse_line(fn)
-        file, *_, comment = parsed
+        file, *_, comment = parsed  # ignore mode and offset returned by parser
 
-        # Non-empty line: Add layer to image stack
+        # Non-empty line: Add to buffer
         if file:
-            buffer.append(parsed)
+            stack.append(parsed)
             continue
 
         # Lines with comments only: avoid flushing the buffer
@@ -108,16 +108,16 @@ def parse(args):
             continue
 
         # Empty line: flush buffered layers to output
-        if not buffer:
+        if not stack:
             continue
-        out.append(list.copy(buffer))
-        buffer = []
+        stacks.append(list.copy(stack))
+        stack = []
 
     # Flush one last time
-    if buffer:
-        out.append(list.copy(buffer))
+    if stack:
+        stacks.append(list.copy(stack))
 
-    return out
+    return stacks
 
 
 def compose(args, i, fn_list):
