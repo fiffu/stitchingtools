@@ -14,7 +14,7 @@ Usage:
 OUTDIR = 'decrypted'
 
 
-
+from argparse import ArgumentParser
 import json
 from glob import glob
 import os
@@ -22,9 +22,6 @@ from threading import Thread
 
 PROCESS_EXT = 'rpgmvp'
 OUTPUT_EXT = 'png'
-
-CWD = None
-
 
 def chunkify(it, chunk_size):
     """Yields n-ples from iterable where n is chunk_size"""
@@ -40,33 +37,35 @@ def toBigram(s):
     return [x for x in chunkify(s, 2)]
 
 
-def getRootDir():
+def getRootDir(exe='Game.exe'):
     # Backtrack through file structure to root dir
-    global CWD
+    def relGlob(path, filepatt):
+        return glob(pjoin(path, filepatt))
 
-    if CWD is not None:
-        return CWD
-
+    print(exe)
     psplit = os.path.split
     pjoin = os.path.join
     pexists = os.path.exists
 
     path = os.getcwd()
 
-    while not glob(pjoin(path, '*.exe')):
-        path = pjoin(psplit(path)[:-1])
-        if not any(path):
+    if pexists(exe):
+        return path
+
+    while not (relGlob(path, exe) or relGlob(path, '*.exe')):
+        parents = psplit(path)
+        if not any(parents):
             raise RuntimeError('Could not find root dir containing game '
                                'executable')
+        path = pjoin(*parents[:-1])
 
     print(f'Detected root dir at {path}')
-    CWD = path
-    return CWD
+    return path
 
 
-def getKey():
+def getKey(rootdir):
     route = ['www', 'data', 'System.json']
-    path = os.path.join(getRootDir(), *route)
+    path = os.path.join(rootdir, *route)
 
     try:
         with open(path, 'r', encoding='utf-8') as f:
@@ -79,9 +78,9 @@ def getKey():
         raise RuntimeError(f'Failed to find encryption key ({cls}: {msg})')
 
 
-def getFiles():
+def getFiles(rootdir):
     route = ['www', 'img', 'pictures']
-    path = os.path.join(getRootDir(), *route)
+    path = os.path.join(rootdir, *route)
     files = filter(lambda s: s.endswith(PROCESS_EXT), os.listdir(path))
     files = [os.path.join(path, fn) for fn in files]
     return files
@@ -94,8 +93,9 @@ class Decryptor():
     defaultVersion = "000301"
     defaultRemain = "0000000000"
 
-    def __init__(self, key):
+    def __init__(self, key, rootdir):
         self.key = key
+        self.rootdir = rootdir
 
         # Fake-header fields
         self._headerLen = None
@@ -169,7 +169,7 @@ class Decryptor():
 
     def decryptFile(self, filePath, outputExt=OUTPUT_EXT):
         newfn = os.path.basename(filePath).replace(PROCESS_EXT, OUTPUT_EXT)
-        newfn = os.path.join(getRootDir(), OUTDIR, newfn)
+        newfn = os.path.join(rootdir, OUTDIR, newfn)
 
         with open(filePath, 'rb') as f:
             ba = bytearray(f.read())
@@ -187,17 +187,30 @@ def worker(decryptor, fn):
 
 
 if __name__ == '__main__':
-    key = getKey()
-    print(f'Using key {key}')
+    parser = ArgumentParser()
 
-    dec = Decryptor(key)
+    parser.add_argument('-k', '--key',
+                        type=str,
+                        help='Specify key to use')
+
+    parser.add_argument('-x', '--exename',
+                        type=str,
+                        default='Game.exe',
+                        help='Specify the name of the game executable'
+                             '(for detecting game root dir)')
+
+    args = parser.parse_args()
+    rootdir = getRootDir(exe=args.exename)
+
+    key = args.key or getKey(rootdir)
+    print(f'Using key {key}')
 
     if not os.path.exists(OUTDIR):
         os.mkdir(OUTDIR)
 
-    files = getFiles()
+    dec = Decryptor(key, rootdir)
     threads = []
-    for fn in files:
+    for fn in getFiles(rootdir):
         t = Thread(target=worker, name=fn, args=(dec, fn))
         threads.append(t)
 
