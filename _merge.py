@@ -192,7 +192,7 @@ def main():
 
     parser.add_argument('-d', '--digits',
                         action='count',
-                        default=0,
+                        default=3,
                         help='number of digits to zero-pad to; default=3 (-ddd)')
 
     parser.add_argument('-D', '--diff',
@@ -241,7 +241,7 @@ def main():
 
         if new_files:
             # Give time for user to press the interrupt
-            time.sleep(0.5)
+            time.sleep(0.2)
 
 
 if __name__ == '__main__':
