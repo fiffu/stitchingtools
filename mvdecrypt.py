@@ -23,6 +23,8 @@ from threading import Thread
 PROCESS_EXT = 'rpgmvp'
 OUTPUT_EXT = 'png'
 
+PROCESS_DIR = ['www', 'img', 'pictures']
+
 def chunkify(it, chunk_size):
     """Yields n-ples from iterable where n is chunk_size"""
     for i in range(0, len(it), chunk_size):
@@ -79,11 +81,15 @@ def getKey(rootdir):
 
 
 def getFiles(rootdir):
-    route = ['www', 'img', 'pictures']
-    path = os.path.join(rootdir, *route)
-    files = filter(lambda s: s.endswith(PROCESS_EXT), os.listdir(path))
-    files = [os.path.join(path, fn) for fn in files]
-    return files
+    path = os.path.join(rootdir, *PROCESS_DIR)
+    for (root, dirs, files) in os.walk(path):
+        for file in files:
+            filepath = os.path.join(root, file)
+            yield filepath
+
+    # files = filter(lambda s: s.endswith(PROCESS_EXT), os.listdir(path))
+    # files = [os.path.join(path, fn) for fn in files]
+    # return files
 
 
 
@@ -168,17 +174,50 @@ class Decryptor():
 
 
     def decryptFile(self, filePath, outputExt=OUTPUT_EXT):
-        newfn = os.path.basename(filePath).replace(PROCESS_EXT, OUTPUT_EXT)
-        newfn = os.path.join(rootdir, OUTDIR, newfn)
+        stub = os.path.join(os.getcwd(), *PROCESS_DIR)
+
+        newfn = filePath.replace(stub, '')[1:].replace(PROCESS_EXT, OUTPUT_EXT)
+        newpath = os.path.join(self.rootdir, OUTDIR, newfn)
+        # raise ValueError(newpath)
 
         with open(filePath, 'rb') as f:
-            ba = bytearray(f.read())
-            clear = self.decrypt(ba, True)
+            crypt = f.read()
+            if self.key:
+                clear = self.decrypt(bytearray(crypt), True)
+            else:
+                clear = crypt
 
-        with open(newfn, 'wb') as g:
-            g.write(clear)
+        try:
+            self.write(newpath, clear)
+        except FileNotFoundError:
+            ensurePath(newpath)
+            # self.write(newpath, clear)
 
-        return newfn
+        return newpath
+
+
+    def write(self, path, data):
+        with open(path, 'wb') as f:
+            f.write(data)
+
+
+def ensurePath(path):
+    exists, isdir, split = os.path.exists, os.path.isdir, os.path.split
+    print('ensure', path)
+
+    breadcrumbs = []
+    head, tail = split(path)
+
+    while not exists(head):
+        breadcrumbs.append(head)
+        head, tail = split(head)
+
+    # First path in the breadcrumbs is deepest in folder tree
+    # Iterate in reverse to build from shallowest folder first
+    for head in breadcrumbs[::-1]:
+        print(head)
+        if not exists(head):
+            os.mkdir(head)
 
 
 def worker(decryptor, fn):
@@ -202,8 +241,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     rootdir = getRootDir(exe=args.exename)
 
-    key = args.key or getKey(rootdir)
-    print(f'Using key {key}')
+    try:
+        key = args.key or getKey(rootdir)
+    except RuntimeError:
+        key = None
+    print(f'Using key: {key}')
 
     if not os.path.exists(OUTDIR):
         os.mkdir(OUTDIR)
