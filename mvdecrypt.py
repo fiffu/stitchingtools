@@ -8,221 +8,191 @@ Usage:
         For Command Prompt on Windows, type:
             python mvdecrypt.py
     4. Files will be placed inside a folder called "decrypted".
+    5. For detailed help, run:
+            python mvdecrypt.py
 """
-
-# Name of folder to put decrypted files in
-OUTDIR = 'decrypted'
-
 
 from argparse import ArgumentParser
 import json
 from glob import glob
 import os
-from threading import Thread
 
-PROCESS_EXT = 'rpgmvp'
-OUTPUT_EXT = 'png'
+abspath = os.path.abspath
 
-PROCESS_DIR = ['www', 'img', 'pictures']
 
-def chunkify(it, chunk_size):
+def parse_error(e):
+    ecls = e.__class__.__name__
+    emsg = str(e)
+    return f'{ecls}: {emsg}'
+
+
+def ngrams(it, chunk_size):
     """Yields n-ples from iterable where n is chunk_size"""
     for i in range(0, len(it), chunk_size):
         yield it[i:i+chunk_size]
 
 
-def toBigram(s):
-    """s -> List[[s[0], s[1]], [s[2], s[3]], ...]
+def traverse(root_dir):
+    join = os.path.join
 
-    If length of sequence s is odd, the final list will have one element only.
-    """
-    return [x for x in chunkify(s, 2)]
+    def walk(path):
+        for (root, dirs, files) in os.walk(path):
+            yield (root, dirs, files)
 
-
-def getRootDir(exe='Game.exe'):
-    # Backtrack through file structure to root dir
-    def relGlob(path, filepatt):
-        return glob(pjoin(path, filepatt))
-
-    print(exe)
-    psplit = os.path.split
-    pjoin = os.path.join
-    pexists = os.path.exists
-
-    path = os.getcwd()
-
-    if pexists(exe):
-        return path
-
-    while not (relGlob(path, exe) or relGlob(path, '*.exe')):
-        parents = psplit(path)
-        if not any(parents):
-            raise RuntimeError('Could not find root dir containing game '
-                               'executable')
-        path = pjoin(*parents[:-1])
-
-    print(f'Detected root dir at {path}')
-    return path
+    for path in walk(root_dir):
+        yield path
 
 
-def getKey(rootdir):
-    route = ['www', 'data', 'System.json']
-    path = os.path.join(rootdir, *route)
+def select_files(relpath, select_extensions):
+    join = os.path.join
+    print(relpath)
+
+    for curdir, subdirs, files in traverse(relpath):
+        for file in files:
+            for ext in select_extensions:
+                if not file.endswith(ext):
+                    continue
+                path = join(curdir, file)
+                yield (path, ext)
+                break
+
+
+def find_key(root_dir, target_file='System.json'):
+    config = None
+    _, ext = os.path.splitext(target_file)
+
+    for relpath, _ in select_files(root_dir, [ext]):
+        if relpath.endswith(target_file):
+            config = os.path.join(root_dir, relpath)
+            break
+
+    else:
+        raise FileNotFoundError(f'Could not find {target_file}')
 
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            system = json.load(f)
-
-        return system['encryptionKey']
+        with open(config, 'r', encoding='utf-8') as f:
+            return json.load(f)['encryptionKey']
 
     except BaseException as e:
-        cls, msg = e.__class__.__name__, str(e)
-        raise RuntimeError(f'Failed to find encryption key ({cls}: {msg})')
+        raise RuntimeError(f'Found {target_file} but failed to read '
+                           f'encryption key ({parse_error(e)})')
 
 
-def getFiles(rootdir):
-    path = os.path.join(rootdir, *PROCESS_DIR)
-    for (root, dirs, files) in os.walk(path):
-        for file in files:
-            filepath = os.path.join(root, file)
-            yield filepath
-
-    # files = filter(lambda s: s.endswith(PROCESS_EXT), os.listdir(path))
-    # files = [os.path.join(path, fn) for fn in files]
-    # return files
-
-
-
-class Decryptor():
-    defaultHeaderLen = 16
-    defaultSignature = "5250474d56000000"
-    defaultVersion = "000301"
-    defaultRemain = "0000000000"
-
-    def __init__(self, key, rootdir):
-        self.key = key
-        self.rootdir = rootdir
-
-        # Fake-header fields
-        self._headerLen = None
-        self._signature = None
-        self._version = None
-        self._remain = None
-
-
-    @property
-    def keyArray(self):
-        key_bigram = [x for x in chunkify(self.key, 2)]
-        b16int = lambda s: int(s, 16)
-        return bytearray(map(b16int, key_bigram))
-
-    @property
-    def headerLen(self):
-        return self._headerLen or self.defaultHeaderLen
-
-    @property
-    def signature(self):
-        return self._signature or self.defaultSignature
-
-    @property
-    def version(self):
-        return self._version or self.defaultVersion
-
-    @property
-    def remain(self):
-        return self._remain or self.defaultRemain
-
-
-    def verifyFakeHeader(self, fileHeader):
-        fakeHeader = self.buildFakeHeader()
-        return cmp(fakeHeader, fileHeader) == 0
-
-
-    def buildFakeHeader(self):
-        headerStructure = self.signature + self.version + self.remain
-        fakeHeader = [
-            int(x, 16) for x in toBigram(headerStructure)
-        ]
-        return fakeHeader
-
-
-    def decrypt(self, byteArray, ignoreFakeHeader):
-        headerLen = self.headerLen
-
-        if not ignoreFakeHeader:
-            header = byteArray[:headerLen]
-            if not self.verifyFakeHeader(header):
-                raise ValueError(
-                    'Input file does not have a fake-header. '
-                    'Make sure that input file is actually encrypted, or '
-                    'try again with ignoreFakeHeader=True'
-                )
-
-        # Trim "fake" header
-        byteArray = byteArray[headerLen:]
-
-        # XOR on real header
-        hdr = byteArray[:headerLen]
-        keyba = self.keyArray
-        hdr = [x ^ y for x, y in zip(hdr, keyba)]
-
-        # Sub xor'd real header into file bytes
-        for i, b in enumerate(hdr):
-            byteArray[i] = b
-
-        return byteArray
-
-
-    def decryptFile(self, filePath, outputExt=OUTPUT_EXT):
-        stub = os.path.join(os.getcwd(), *PROCESS_DIR)
-
-        newfn = filePath.replace(stub, '')[1:].replace(PROCESS_EXT, OUTPUT_EXT)
-        newpath = os.path.join(self.rootdir, OUTDIR, newfn)
-        # raise ValueError(newpath)
-
-        with open(filePath, 'rb') as f:
-            crypt = f.read()
-            if self.key:
-                clear = self.decrypt(bytearray(crypt), True)
-            else:
-                clear = crypt
-
-        try:
-            self.write(newpath, clear)
-        except FileNotFoundError:
-            ensurePath(newpath)
-            # self.write(newpath, clear)
-
-        return newpath
-
-
-    def write(self, path, data):
-        with open(path, 'wb') as f:
-            f.write(data)
-
-
-def ensurePath(path):
-    exists, isdir, split = os.path.exists, os.path.isdir, os.path.split
-    print('ensure', path)
+def mkdir(path):
+    exists, split = os.path.exists, os.path.split
 
     breadcrumbs = []
-    head, tail = split(path)
+    head, file = split(path)
 
-    while not exists(head):
+    while head and (not exists(head)):
         breadcrumbs.append(head)
-        head, tail = split(head)
+        head, _ = split(head)
 
     # First path in the breadcrumbs is deepest in folder tree
     # Iterate in reverse to build from shallowest folder first
     for head in breadcrumbs[::-1]:
-        print(head)
         if not exists(head):
             os.mkdir(head)
 
 
-def worker(decryptor, fn):
-    outfile = decryptor.decryptFile(fn)
-    print('  wrote', outfile)
+
+def write(path, data, flags='wb', retry=True):
+    try:
+        with open(path, flags) as f:
+            f.write(data)
+    except FileNotFoundError:
+        if not retry:
+            raise
+
+        mkdir(path)
+        write(path, data, flags, retry=False)
+
+
+class Decryptor:
+    header_len = 16
+    signature = "5250474d56000000"
+    version = "000301"
+    remain = "0000000000"
+
+    def __init__(self, root_dir, key):
+        self.root = root_dir
+        self.key = key
+
+    @classmethod
+    def make_fake_header(cls, self):
+        header = cls.signature + cls.version + cls.remain
+        return [int(x, 16) for x in ngrams(header, 2)]
+
+
+    @property
+    def key_array(self):
+        b16int = lambda n: int(n, 16)
+        return bytearray(map(b16int, ngrams(self.key, 2)))
+
+
+    def decrypt(self, crypt, ignore_fake_header=True):
+        hlen = self.header_len
+
+        if not ignore_fake_header:
+            header = byteArray[:hlen]
+            if not self.make_fake_header() == header:
+                raise ValueError("Input file doesn't seem to have fake-header. "
+                                 'Ensure that target file is actually encrypted '
+                                 'of try again with ignore_fake_header=True')
+
+        # Trim "fake" header
+        crypt = crypt[hlen:]
+
+        # XOR key with real header
+        header = crypt[:hlen]
+        for i, (h, k) in enumerate(zip(header, self.key_array)):
+            crypt[i] = h ^ k
+
+        return crypt
+
+
+    def decrypt_file(self, relpath, outdir, from_ext, to_ext, trim_prefix=None):
+        outpath = os.path.join(outdir, relpath.replace(from_ext, to_ext))
+        if trim_prefix:
+            outpath = outpath.replace(trim_prefix, '')
+            if outpath[0] in '/\\':
+                outpath = outpath[1:]
+        print(outpath)
+
+        with open(relpath, 'rb') as f:
+            clear = f.read()
+            if self.key:
+                clear = self.decrypt(bytearray(clear))
+
+        write(outpath, clear)
+
+
+def main(args):
+    original_dir = os.getcwd()
+
+    outdir = args.output_dir
+    indir = args.input_dir
+    root = args.root_dir
+
+    exts = {}
+    for pair in args.extension:
+        xfrom, xto = pair.split(':')
+        exts[xfrom] = xto
+
+    try:
+        os.chdir(root)
+
+        key = '' if args.unencrypted else args.key
+        if key is None:
+            key = find_key(root)
+
+        dec = Decryptor(root, key)
+
+        for file, ext in select_files(indir, list(exts.keys())):
+            dec.decrypt_file(file, args.output_dir, ext, exts[ext], indir)
+
+    finally:
+        os.chdir(original_dir)
 
 
 if __name__ == '__main__':
@@ -230,34 +200,38 @@ if __name__ == '__main__':
 
     parser.add_argument('-k', '--key',
                         type=str,
-                        help='Specify key to use')
+                        help='Specify key to use. "-k \'\'" means no key.')
 
-    parser.add_argument('-x', '--exename',
+    parser.add_argument('-u', '--unencrypted',
+                        action='store_true',
+                        help='Indicates no encryption. Implies "-k \'\'"')
+
+    parser.add_argument('-x', '--extension',
                         type=str,
-                        default='Game.exe',
-                        help='Specify the name of the game executable'
-                             '(for detecting game root dir)')
+                        default=['rpgmvp:png', 'png:png'],
+                        action='append',
+                        help='Extension mapping. Apply multiple times to '
+                             'specify multiple target and output extensions. '
+                             'Default is equivalent to '
+                             '"-x rpgmvp:png -x png:png"')
+
+
+    parser.add_argument('-r', '--root_dir',
+                        type=abspath,
+                        default='.',
+                        help='Root directory. Defaults to current directory.')
+
+    parser.add_argument('-i', '--input_dir',
+                        type=os.path.normpath,
+                        default='www/img/pictures',
+                        help='Directory containing encrypted files, relative '
+                             'to the root. Defaults to "www/img/pictures"')
+
+    parser.add_argument('-o', '--output_dir',
+                        type=os.path.normpath,
+                        default='decrypted',
+                        help='Directory to store decrypted files, relative '
+                             'to the root. Defaults to "decrypted"')
 
     args = parser.parse_args()
-    rootdir = getRootDir(exe=args.exename)
-
-    try:
-        key = args.key or getKey(rootdir)
-    except RuntimeError:
-        key = None
-    print(f'Using key: {key}')
-
-    if not os.path.exists(OUTDIR):
-        os.mkdir(OUTDIR)
-
-    dec = Decryptor(key, rootdir)
-    threads = []
-    for fn in getFiles(rootdir):
-        t = Thread(target=worker, name=fn, args=(dec, fn))
-        threads.append(t)
-
-    for t in threads:
-        t.start()
-
-    for t in threads:
-        t.join()
+    main(args)
