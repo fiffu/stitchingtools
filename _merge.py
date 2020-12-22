@@ -120,7 +120,7 @@ def parse(args):
     return stacks
 
 
-def compose(args, i, fn_list):
+def compose(args, i, fn_list, is_last=False):
     """Merges the input stack of filenames
 
     fn_list is a list of filenames representing a group of layers.
@@ -135,7 +135,7 @@ def compose(args, i, fn_list):
     # Check for existing output target
     out_path = os.path.join(args.outdir, out_fn)
     if os.path.exists(out_path):
-        if args.skipconflict:
+        if (not is_last) and args.skipconflict:
             print(f'{out_fn} exists, skipping')
             return None
 
@@ -176,6 +176,12 @@ def compose(args, i, fn_list):
     return out_path
 
 
+def show(imgpath):
+    img = Image.open(imgpath)
+    img.show()
+
+
+
 def main():
     parser = ArgumentParser()
 
@@ -202,7 +208,7 @@ def main():
     parser.add_argument('-i', '--input',
                         type=str,
                         default='_info.txt',
-                        help="folder to store output files; default='_info.txt'")
+                        help="file to read input text; default='_info.txt'")
 
     parser.add_argument('-o', '--outdir',
                         type=str,
@@ -219,6 +225,10 @@ def main():
                         default='',
                         help='optional suffix for output filenames')
 
+    parser.add_argument('-l', '--last',
+                        action='store_true',
+                        help='only overwrite last entry and show')
+
     args = parser.parse_args()
 
     # Prep dir for output
@@ -226,23 +236,44 @@ def main():
         os.mkdir(args.outdir)
 
     new_files = []
-    for i, grp in enumerate(parse(args)):
-        file = compose(args, i, grp)
+    groups = parse(args)
+    sentinel = len(groups) - 1
+    is_last = False
+
+    for i, grp in enumerate(groups):
+        if args.last:
+            if i != sentinel:
+                continue
+            is_last = True
+
+        file = compose(args, i, grp, is_last)
         if file:
             new_files.append(file)
 
-
-    while args.diff and new_files:
-        print()
-        print('Showing output files -- Ctrl-C to quit')
-        file = new_files.pop(0)
+    if args.last:
+        print('Showing last file only')
+        file = new_files.pop()
         img = Image.open(file)
-        img.show()
+        canvas = Image.new('RGBA', img.size)
+        canvas.alpha_composite(img)
+        canvas.show()
 
-        if new_files:
-            # Give time for user to press the interrupt
-            time.sleep(0.2)
+    else:
+        if args.diff:
+            print('Showing output files -- Ctrl-C to quit')
+        while args.diff and new_files:
+            file = new_files.pop(0)
+            print(file)
+            show(file)
+
+            if new_files:
+                # Give time for user to press the interrupt
+                time.sleep(0.2)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('Aborted')
+        pass
