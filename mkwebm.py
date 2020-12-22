@@ -1,3 +1,32 @@
+"""
+Combine raw frames into animations. Can output in gif, apng, webm.
+
+Usage: edit the SCORE string below then call:
+    $ python3 mkwebm.py
+
+* Outputs go directly into the working dir.
+* A `temp` folder is created to store intermediate knitted frames and can be
+  deleted after the script completes.
+
+____Usage (extended)____
+You define a score, each containing CueSheets separated by a blank line.
+CueSheets `start` an animation from idx 0 and `halt` at the specified frame.
+(specifying "30, halt" means the last frame should be idx 29)
+
+Each CueSheet specifies `stack` of frame components that can be "knitted" 
+(composited) into a single complete frame before it is "composed" into the 
+output image/video.
+
+Each component is defined by a filename, frame_range, and LoopType.
+* filename doesn't include the extension (defaulting to .png).
+* frame_range uses ~ as delimiter: a01~3 => [a01, a02, a03]
+* LoopType comes last. a01~11^ => [a01 ... a10, a11, a10 ... a01, a02 ...]
+
+Various options are available for CueSheets, prefixed with /
+See OPTION_TYPES below for a summary of what they do.
+See also other options like FPS, OUT_FORMAT, VERBOSITY below.
+"""
+
 from glob import glob
 import io
 from itertools import zip_longest
@@ -7,7 +36,7 @@ import re
 from subprocess import run, STDOUT, DEVNULL
 from typing import Tuple
 
-from apng import APNG, PNG
+from apng import APNG, PNG  # pip install apng
 from PIL import Image  # pip install pillow
 
 # typedefs
@@ -20,18 +49,26 @@ OUT_FORMAT = (
     # '.apng'
     '.gif'
 )
-
 VERBOSITY = 1
-FORCE_WRITE_FRAMES = True
+
+# Frames only have to be written to disk in case of .webm output.
+# Set True to write frames anyway (warning: slow!)
+FORCE_WRITE_FRAMES = False
 
 OPTION_TYPES = {
     'rescale': float,
     'charset': str,  # 'int' or 'ascii' or 'fullwidth'
     'align': str, # [w|s|c]  (compass cardinals) (warning: slow!)
-    'bgcol': RgbTuple,  # specify '255,0,0' without spaces for #ff0000
+    'bgcol': RgbTuple,  # specify 255,0,0 for #ff0000 (no spaces!)
 }
 
-text = """
+SYMBOLS_TO_LOOPTYPE = {
+    '^': 'ABA',
+    '@': 'AB',
+    '>': 'ABB',
+}
+
+SCORE = """
 /bgcol 50,50,50
 /align w
 
@@ -216,11 +253,7 @@ def get_frame_range(string, charset='ascii'):
     pad = len(starts)
     stub = string[:found.start()]
 
-    repeat = {
-        '^': 'ABA',
-        '@': 'AB',
-        '>': 'ABB',
-    }.get(rep, None)
+    repeat = SYMBOLS_TO_LOOPTYPE.get(rep, None)
 
     return stub, pad, int(starts), int(ends), repeat
 
@@ -551,6 +584,6 @@ class Parser:
 
 
 if __name__ == '__main__':
-    p = Parser(text)
+    p = Parser(SCORE)
     for i, cs in enumerate(p.parse()):
         cs.compose(f'{i + 1:>03}{OUT_FORMAT}')
