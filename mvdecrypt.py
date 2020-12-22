@@ -71,7 +71,7 @@ def find_key(root_dir, target_file='System.json'):
 
     try:
         with open(config, 'r', encoding='utf-8') as f:
-            return json.load(f)['encryptionKey']
+            return json.load(f).get('encryptionKey')
 
     except BaseException as e:
         raise RuntimeError(f'Found {target_file} but failed to read '
@@ -185,6 +185,10 @@ def main(args):
         key = '' if args.unencrypted else args.key
         if key is None:
             key = find_key(root)
+
+        if not key:
+            with open('__unencrypted', 'w'):
+                return
 
         dec = Decryptor(root, key)
 
