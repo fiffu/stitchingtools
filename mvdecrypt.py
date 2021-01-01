@@ -159,10 +159,12 @@ def get_args():
     parser.add_argument('-k',
                         type=str,
                         metavar='KEY',
+                        dest='key',
                         help='Specify key to use')
 
     parser.add_argument('-u',
                         action='store_true',
+                        dest='unencrypted',
                         help='Indicates unencrypted assets (aliases `-k ""`)')
 
     parser.add_argument('-x',
@@ -170,6 +172,7 @@ def get_args():
                         default=['rpgmvp:png', 'png:png'],
                         action='append',
                         metavar='FROM:TO',
+                        dest='extension',
                         help='Extension mapping: pass this once for each '
                              'mapping; defaults to "-x rpgmvp:png -x png:png"')
 
@@ -183,6 +186,7 @@ def get_args():
                         type=os.path.normpath,
                         default='www/img/pictures',
                         metavar='PATH',
+                        dest='indir',
                         help='Relative path to directory storing encrypted '
                              'files; defaults to "www/img/pictures"')
 
@@ -190,12 +194,13 @@ def get_args():
                         type=os.path.normpath,
                         default=None,
                         metavar='PATH',
+                        dest='outdir',
                         help='Relative path to directory to store decrypted '
                              'output; leave blank to infer from input_dir')
 
     args = parser.parse_args()
-    if not args.output_dir:
-        args.output_dir = os.path.split(args.input_dir)[-1]
+    if not args.outdir:
+        args.outdir = os.path.split(args.indir)[-1]
 
     return args
 
@@ -204,9 +209,9 @@ def main():
     args = get_args()
     original_dir = os.getcwd()
 
-    outdir = args.output_dir
-    indir = args.input_dir
-    root = args.root_dir
+    outdir = args.outdir
+    indir = args.indir
+    root = args.root
 
     exts = {}
     for pair in args.extension:
@@ -226,7 +231,7 @@ def main():
         dec = Decryptor(root, key)
 
         for file, ext in select_files(indir, list(exts.keys())):
-            dec.decrypt_file(file, args.output_dir, ext, exts[ext], indir)
+            dec.decrypt_file(file, args.outdir, ext, exts[ext], indir)
 
     finally:
         os.chdir(original_dir)
