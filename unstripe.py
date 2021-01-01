@@ -106,9 +106,10 @@ def get_args():
                      type=int2ple,
                      metavar='COLS,ROWS')
 
-    parser.add_argument('-i', '--input',
+    parser.add_argument('--glob',
                         default='*.png',
-                        metavar='STRING')
+                        metavar='PATTERN',
+                        help='default: *.png')
 
     parser.add_argument('-f', '--folderize',
                         action='store_true',
@@ -120,7 +121,7 @@ def get_args():
 
 def main():
     args = get_args()
-    globstr = args.input
+    globstr = args.glob
 
     for file in glob(globstr):
         print(file)
