@@ -1,14 +1,12 @@
-"""
-Quick and dirty script to extract frames tiled inside spritesheets.
-"""
-
+from argparse import ArgumentParser
 from collections import namedtuple
+from glob import glob
 import os
 
 from PIL import Image
 
 Box = namedtuple('Box', 'left upper right lower')
-Coords = namedtuple('Coords', 'x, y')
+XY = namedtuple('XY', 'x, y')
 
 
 def blocks(img, blockx, blocky):
@@ -40,7 +38,7 @@ def new_canvas(width, height, mode='RGBA'):
 def join(canvas, blocks_iterable):
     canvas = canvas.copy()
 
-    cursor = Coords(0, 0)
+    cursor = XY(0, 0)
 
     wid_canvas, hgt_canvas = canvas.size
 
@@ -50,7 +48,7 @@ def join(canvas, blocks_iterable):
         target_x = (cursor.x + wid) % wid_canvas
         target_y = (cursor.y + hgt) % hgt_canvas
 
-        cursor = Coords(target_x, target_y)
+        cursor = XY(target_x, target_y)
 
         canvas.alpha_composite(block, dest=(cursor.x, cursor.y))
 
@@ -67,14 +65,66 @@ def unstripe(filename, block_wid, block_hgt):
     return canvas
 
 
-def unreel(filename, block_wid, block_hgt, outdir=''):
+def unreel(filename, args):
+    img = Image.open(filename)
+
+    if args.box:
+        block_wid, block_hgt = args.box
+    elif args.matrix:
+        block_wid, block_hgt = [a // b for a, b in zip(img.size, args.matrix)]
+    else:
+        return
+
+    name, ext = os.path.splitext(filename)
+    outdir = name if args.folderize else ''
     if outdir and not os.path.exists(outdir):
         os.mkdir(outdir)
 
-    img = Image.open(filename)
-
-    name, ext = os.path.splitext(filename)
-
+    outfiles = []
     for i, block in enumerate(blocks(img, block_wid, block_hgt)):
-        outfile = f'{name}_{i:>03}{ext}'
-        block.save(os.path.join(outdir, outfile))
+        outname = f'{name}_{i:>03}{ext}'
+        outfile = os.path.join(outdir, outname)
+        block.save(outfile)
+        outfiles.append(outfile)
+
+    return outfiles
+
+
+def get_args():
+    def int2ple(s):
+        x, y = [int(n.strip()) for n in s.split(',')]
+        return x, y
+
+    parser = ArgumentParser()
+
+    grp = parser.add_mutually_exclusive_group(required=True)
+    grp.add_argument('-b', '--box',
+                     type=int2ple,
+                     metavar='WIDTH,HEIGHT')
+
+    grp.add_argument('-m', '--matrix',
+                     type=int2ple,
+                     metavar='COLS,ROWS')
+
+    parser.add_argument('-i', '--input',
+                        default='*.png',
+                        metavar='STRING')
+
+    parser.add_argument('-f', '--folderize',
+                        action='store_true',
+                        help='store outputs in folders, one per spritesheet')
+
+    return parser.parse_args()
+
+
+
+def main():
+    args = get_args()
+    globstr = args.input
+
+    for file in glob(globstr):
+        print(file)
+        unreel(file, args)
+
+if __name__ == '__main__':
+    main()
