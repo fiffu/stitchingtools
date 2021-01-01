@@ -8,7 +8,7 @@ Batch job for cherry-picking streams with ffmpeg.
 
 ### Step-by-step usage
 
-1. Download `demux.bat` and [ffmpeg](https://github.com/GyanD/codexffmpeg/releases)
+1. Download `demux.bat` and [ffmpeg](https://github.com/GyanD/codexffmpeg/releases/latest)
    (choose *essentials_build*).
 
 2. Put `ffmpeg.exe` and `demux.bat` in the folder containing the video files you want to
