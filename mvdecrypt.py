@@ -1,17 +1,3 @@
-"""
-mvdecrypt.py
-
-Usage:
-    1. Ensure you have python 3
-    2. Move this file into the same folder where the .rpgmvp files are kept.
-    3. From terminal (command prompt), run this script.
-        For Command Prompt on Windows, type:
-            python mvdecrypt.py
-    4. Files will be placed inside a folder called "decrypted".
-    5. For detailed help, run:
-            python mvdecrypt.py
-"""
-
 from argparse import ArgumentParser
 import json
 from glob import glob
@@ -167,7 +153,55 @@ class Decryptor:
         write(outpath, clear)
 
 
-def main(args):
+def get_args():
+    parser = ArgumentParser()
+
+    parser.add_argument('-k',
+                        type=str,
+                        metavar='KEY',
+                        help='Specify key to use')
+
+    parser.add_argument('-u',
+                        action='store_true',
+                        help='Indicates unencrypted assets (aliases `-k ""`)')
+
+    parser.add_argument('-x',
+                        type=str,
+                        default=['rpgmvp:png', 'png:png'],
+                        action='append',
+                        metavar='FROM:TO',
+                        help='Extension mapping: pass this once for each '
+                             'mapping; defaults to "-x rpgmvp:png -x png:png"')
+
+    parser.add_argument('-r', '--root',
+                        type=abspath,
+                        default='.',
+                        metavar='PATH',
+                        help='Root directory; defaults to current directory')
+
+    parser.add_argument('-i', '--in',
+                        type=os.path.normpath,
+                        default='www/img/pictures',
+                        metavar='PATH',
+                        help='Relative path to directory storing encrypted '
+                             'files; defaults to "www/img/pictures"')
+
+    parser.add_argument('-o', '--out',
+                        type=os.path.normpath,
+                        default=None,
+                        metavar='PATH',
+                        help='Relative path to directory to store decrypted '
+                             'output; leave blank to infer from input_dir')
+
+    args = parser.parse_args()
+    if not args.output_dir:
+        args.output_dir = os.path.split(args.input_dir)[-1]
+
+    return args
+
+
+def main():
+    args = get_args()
     original_dir = os.getcwd()
 
     outdir = args.output_dir
@@ -185,10 +219,9 @@ def main(args):
         key = '' if args.unencrypted else args.key
         if key is None:
             key = find_key(root)
-
-        if not key:
-            with open('__unencrypted', 'w'):
-                return
+            if not key:
+                with open('__unencrypted', 'w'):
+                    return
 
         dec = Decryptor(root, key)
 
@@ -200,42 +233,4 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = ArgumentParser()
-
-    parser.add_argument('-k', '--key',
-                        type=str,
-                        help='Specify key to use. "-k \'\'" means no key.')
-
-    parser.add_argument('-u', '--unencrypted',
-                        action='store_true',
-                        help='Indicates no encryption. Implies "-k \'\'"')
-
-    parser.add_argument('-x', '--extension',
-                        type=str,
-                        default=['rpgmvp:png', 'png:png'],
-                        action='append',
-                        help='Extension mapping. Apply multiple times to '
-                             'specify multiple target and output extensions. '
-                             'Default is equivalent to '
-                             '"-x rpgmvp:png -x png:png"')
-
-
-    parser.add_argument('-r', '--root_dir',
-                        type=abspath,
-                        default='.',
-                        help='Root directory. Defaults to current directory.')
-
-    parser.add_argument('-i', '--input_dir',
-                        type=os.path.normpath,
-                        default='www/img/pictures',
-                        help='Directory containing encrypted files, relative '
-                             'to the root. Defaults to "www/img/pictures"')
-
-    parser.add_argument('-o', '--output_dir',
-                        type=os.path.normpath,
-                        default='decrypted',
-                        help='Directory to store decrypted files, relative '
-                             'to the root. Defaults to "decrypted"')
-
-    args = parser.parse_args()
-    main(args)
+    main()
