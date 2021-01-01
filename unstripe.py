@@ -21,12 +21,12 @@ def blocks(img, blockx, blocky):
 
     for iy in range(hgt // blocky):
         for ix in range(wid // blockx):
-            left = ix * blockx
-            upper = iy * blocky
-
-            right = left + blockx
-            lower = upper + blocky
-
+            box = Box(
+                left=ix * blockx,
+                upper=iy * blocky,
+                right=left + blockx,
+                lower=upper + blocky
+            )
             block = img.crop(Box(left, upper, right, lower))
             yield block
 
@@ -35,7 +35,7 @@ def new_canvas(width, height, mode='RGBA'):
     return Image.new(mode, size=(width, height))
 
 
-def join(canvas, blocks_iterable):
+def tile_out(canvas, blocks_iterable):
     canvas = canvas.copy()
 
     cursor = XY(0, 0)
@@ -60,7 +60,7 @@ def unstripe(filename, block_wid, block_hgt):
 
     canvas = new_canvas(*img.size)
 
-    canvas = join(canvas, blocks(img, block_wid, block_hgt))
+    canvas = tile_out(canvas, blocks(img, block_wid, block_hgt))
 
     return canvas
 
