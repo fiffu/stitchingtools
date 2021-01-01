@@ -1,10 +1,15 @@
 # demux
 
+Batch job for cherry-picking streams with ffmpeg.
+
 ![Example ffmpeg command with stream -map options marked in red](example.png)
+
+*Example ffmpeg command with stream -map options marked in red*
 
 ### Step-by-step usage
 
-1. Download. Unzip `ffmpeg.zip` into `ffmpeg.exe`.
+1. Download `demux.bat` and [ffmpeg](https://github.com/GyanD/codexffmpeg/releases)
+   (choose *essentials_build*).
 
 2. Put `ffmpeg.exe` and `demux.bat` in the folder containing the video files you want to
    work on.
@@ -20,8 +25,8 @@
 
 7. Edit `fileFormat` to match your files, for example: **`.mp4`** (no spaces)
 
-8. Edit `mapStreams`, specifying only the streams you need. You have to repeat `-map` for
-   each stream.
+8. Edit `mapStreams`, specifying only the streams you need. You have to repeat **`-map`**
+   for each stream.
 
 9. You can change the name of `outputFolder` if you want.
 
