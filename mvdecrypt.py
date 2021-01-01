@@ -156,23 +156,20 @@ class Decryptor:
 def get_args():
     parser = ArgumentParser()
 
-    parser.add_argument('-k',
+    parser.add_argument('-k', dest='key',
                         type=str,
                         metavar='KEY',
-                        dest='key',
                         help='Specify key to use')
 
-    parser.add_argument('-u',
+    parser.add_argument('-u', dest='unencrypted',
                         action='store_true',
-                        dest='unencrypted',
                         help='Indicates unencrypted assets (aliases `-k ""`)')
 
-    parser.add_argument('-x',
+    parser.add_argument('-x', dest='extension',
                         type=str,
                         default=['rpgmvp:png', 'png:png'],
                         action='append',
                         metavar='FROM:TO',
-                        dest='extension',
                         help='Extension mapping: pass this once for each '
                              'mapping; defaults to "-x rpgmvp:png -x png:png"')
 
@@ -182,19 +179,17 @@ def get_args():
                         metavar='PATH',
                         help='Root directory; defaults to current directory')
 
-    parser.add_argument('-i', '--in',
+    parser.add_argument('-i', '--in', dest='indir',
                         type=os.path.normpath,
                         default='www/img/pictures',
                         metavar='PATH',
-                        dest='indir',
                         help='Relative path to directory storing encrypted '
                              'files; defaults to "www/img/pictures"')
 
-    parser.add_argument('-o', '--out',
+    parser.add_argument('-o', '--out', dest='outdir',
                         type=os.path.normpath,
                         default=None,
                         metavar='PATH',
-                        dest='outdir',
                         help='Relative path to directory to store decrypted '
                              'output; leave blank to infer from input_dir')
 
