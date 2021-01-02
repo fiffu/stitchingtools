@@ -64,16 +64,26 @@ OPTION_TYPES = {
 }
 SYMBOLS_TO_LOOPTYPE = {
     '^': 'ABA',
-    '@': 'AB',
+    '@': 'ABAB',
     '>': 'ABB',
 }
 
 SCORE = """
-/fps 7
-/bgcol 50,50,50
-/align w
+/fps 6
+/align c
 
-0, scene_effects_under1~3@, scene_2-1~8, scene_effects_above1~3@
+0, Kinoco Haikei, Kinoco_000~4, Haikei shine
+5, halt
+
+0, Kinoco Haikei, Kinoco_008~15, Kinoco Haikei shine
+4, halt
+
+/fps 8
+0, Kinoco Haikei, Kinoco_012~19, Kinoco Haikei shine
+19-12+1, halt
+
+/fps 5
+0,  Kinoco Haikei, Kinoco_020~28@, Kinoco Haikei shine
 8, halt
 """
 
@@ -391,7 +401,7 @@ class CueSheet:
         if exists('temp'):
             for file in glob('temp/*'):
                 os.remove(file)
-        else:
+        elif FORCE_WRITE_FRAMES:
             os.mkdir('temp')
 
         frames = []
