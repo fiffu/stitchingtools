@@ -13,8 +13,8 @@ You define a score, each containing CueSheets separated by a blank line.
 CueSheets `start` an animation from idx 0 and `halt` at the specified frame.
 (specifying "30, halt" means the last frame should be idx 29)
 
-Each CueSheet specifies `stack` of frame components that can be "knitted" 
-(composited) into a single complete frame before it is "composed" into the 
+Each CueSheet specifies `stack` of frame components that can be "knitted"
+(composited) into a single complete frame before it is "composed" into the
 output image/video.
 
 Each component is defined by a filename, frame_range, and LoopType.
@@ -43,12 +43,12 @@ from PIL import Image  # pip install pillow
 RgbTuple = Tuple[int, int, int]
 
 
-FPS = 7
 OUT_FORMAT = (
     # '.webm'
     # '.apng'
     '.gif'
 )
+
 VERBOSITY = 1
 
 # Frames only have to be written to disk in case of .webm output.
@@ -56,12 +56,12 @@ VERBOSITY = 1
 FORCE_WRITE_FRAMES = False
 
 OPTION_TYPES = {
+    'fps': int,
     'rescale': float,
     'charset': str,  # 'int' or 'ascii' or 'fullwidth'
     'align': str, # [w|s|c]  (compass cardinals) (warning: slow!)
     'bgcol': RgbTuple,  # specify 255,0,0 for #ff0000 (no spaces!)
 }
-
 SYMBOLS_TO_LOOPTYPE = {
     '^': 'ABA',
     '@': 'AB',
@@ -69,6 +69,7 @@ SYMBOLS_TO_LOOPTYPE = {
 }
 
 SCORE = """
+/fps 7
 /bgcol 50,50,50
 /align w
 
@@ -80,6 +81,7 @@ SCORE = """
 
 class ParseError(ValueError):
     pass
+
 
 class Loopr:
     class LoopType:
@@ -102,6 +104,7 @@ class Loopr:
         if hasattr(self.LoopType, by):
             pass
         else:
+            # Support inverse semantics e.g. BABA => ABAB with inverse flag
             ay = ''.join('AB'[x == 'A'] for x in by)
             if hasattr(self.LoopType, ay):
                 self.inverse = True
@@ -216,6 +219,8 @@ class LazyAccessDict:
         return val
     def __str__(self):
         return str(self._LazyAccessDict_data)
+    def __iter__(self):
+        yield from self._LazyAccessDict_data.items()
 
 
 
@@ -380,7 +385,7 @@ class CueSheet:
         return base
 
 
-    def compose(self, outname, fps=FPS, force_write_frames=FORCE_WRITE_FRAMES):
+    def compose(self, outname, force_write_frames=FORCE_WRITE_FRAMES):
         fmt = 'temp/%05d.png'
 
         if exists('temp'):
@@ -406,6 +411,8 @@ class CueSheet:
                 if h > pad[1]:
                     pad[1] = h
 
+        if VERBOSITY > 0:
+            print('', outname, ' '.join(f'{k}={v}' for k, v in self.opt))
         for i, layers in enumerate(rendered):
             if VERBOSITY > 0:
                 print(f'{i:>3} | {formatted[i]} | {i:>3}')
@@ -419,11 +426,11 @@ class CueSheet:
                 frame.save(filename)
 
         if outname.endswith('.webm'):
-            self.make_webm(fmt, fps, outname)
+            self.make_webm(fmt, self.opt.fps, outname)
         elif outname.endswith('.apng'):
-            self.make_apng(fmt, fps, outname, frames)
+            self.make_apng(fmt, self.opt.fps, outname, frames)
         elif outname.endswith('.gif'):
-            self.make_gif(fmt, fps, outname, frames)
+            self.make_gif(fmt, self.opt.fps, outname, frames)
 
 
         if VERBOSITY > 0:
@@ -548,7 +555,7 @@ class Parser:
                     cues['options'].update(option)
                     continue
                 else:
-                    raise ParseError(f'invalid option syntax: "line"')
+                    raise ParseError(f'invalid option syntax: "{line}"')
 
             idx, *layers = line.split(self.delim)
             idx = eval(idx)
@@ -566,10 +573,12 @@ class Parser:
             cues, max_layers = self.parse_stack(stacklines)
             if cues['options']:
                 options.update(cues['options'])
-                continue
 
-            if not 0 in cues:
-                raise ParseError(f'missing frame 0 for "{stacklines[0]}"')
+            if 0 not in cues:
+                if cues['options']:
+                    continue
+                else:
+                    raise ParseError(f'missing frame 0 for "{stacklines[0]}"')
 
             halt = [k for k, v in cues.items() if 'halt' in v]
             if not halt:
@@ -577,7 +586,7 @@ class Parser:
 
             haltidx = max(halt)
 
-            cs = CueSheet(cues, max_layers, haltidx, options)
+            cs = CueSheet(cues, max_layers, haltidx, options.copy())
             cue_sheets.append(cs)
         return cue_sheets
 
