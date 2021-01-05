@@ -21,12 +21,9 @@ def blocks(img, blockx, blocky):
 
     for iy in range(hgt // blocky):
         for ix in range(wid // blockx):
-            box = Box(
-                left=ix * blockx,
-                upper=iy * blocky,
-                right=left + blockx,
-                lower=upper + blocky
-            )
+            left, upper = ix * blockx, iy * blocky
+            right, lower = left + blockx, upper + blocky
+            box = Box(left=left, upper=upper, right=right, lower=lower)
             block = img.crop(Box(left, upper, right, lower))
             yield block
 
