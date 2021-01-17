@@ -3,6 +3,16 @@ import json
 from glob import glob
 import os
 
+
+# 2k-specific
+import io
+import struct
+import zlib
+
+from PIL import Image
+
+
+
 abspath = os.path.abspath
 
 
@@ -94,6 +104,12 @@ def write(path, data, flags='wb', retry=True):
         write(path, data, flags, retry=False)
 
 
+
+class DecryptError(ValueError):
+    pass
+
+
+
 class Decryptor:
     header_len = 16
     signature = "5250474d56000000"
@@ -122,9 +138,9 @@ class Decryptor:
         if not ignore_fake_header:
             header = byteArray[:hlen]
             if not self.make_fake_header() == header:
-                raise ValueError("Input file doesn't seem to have fake-header. "
-                                 'Ensure that target file is actually encrypted '
-                                 'of try again with ignore_fake_header=True')
+                raise DecryptError("Input file doesn't seem to have fake-header. "
+                                   'Ensure that target file is actually encrypted '
+                                   'of try again with ignore_fake_header=True')
 
         # Trim "fake" header
         crypt = crypt[hlen:]
@@ -138,12 +154,12 @@ class Decryptor:
 
 
     def decrypt_file(self, relpath, outdir, from_ext, to_ext, trim_prefix=None):
-        outpath = os.path.join(outdir, relpath.replace(from_ext, to_ext))
+        outfile = relpath.replace(from_ext, to_ext)
         if trim_prefix:
-            outpath = outpath.replace(trim_prefix, '')
-            if outpath[0] in '/\\':
-                outpath = outpath[1:]
-        print(outpath)
+            outfile = outfile.replace(trim_prefix, '')
+            if outfile[0] in '/\\':
+                outfile = outfile[1:]
+        outpath = os.path.join(outdir, outfile)
 
         with open(relpath, 'rb') as f:
             clear = f.read()
@@ -151,6 +167,50 @@ class Decryptor:
                 clear = self.decrypt(bytearray(clear))
 
         write(outpath, clear)
+
+
+
+class Decryptor2k(Decryptor):
+    MAGIC = b'XYZ1'
+    PALETTE_SIZE = 0xFF
+
+    @staticmethod
+    def cleave(indexable, index):
+        return indexable[:index], indexable[index:]
+
+
+    def decrypt(self, crypt):
+        unpack = struct.unpack
+
+        header, body = self.cleave(crypt, 8)
+        magic, meta = self.cleave(header, 4)
+
+        if magic != self.MAGIC:
+            raise DecryptError(
+                f'Missing 2k header, expected "{self.MAGIC}", got  "{magic}"')
+
+        body = io.BytesIO(zlib.decompress(body))
+
+        palette = []
+        for _ in range(self.PALETTE_SIZE + 1):
+            r, g, b = unpack('=3B', body.read(3))
+            palette.append((r, g, b))
+
+        width, height = unpack('=HH', meta)
+
+        img = Image.new('RGBA', (width, height))
+        img_pixels = img.load()
+        for y in range(height):
+            for x in range(width):
+                r, g, b = palette[ord(body.read(1))]
+                a = 0 if b == self.PALETTE_SIZE else 0xFF
+                img_pixels[x, y] = (r, g, b, a)
+
+
+        buf = io.BytesIO()
+        img.save(buf, 'PNG')
+        buf.seek(0)
+        return buf.read()
 
 
 def get_args():
@@ -173,6 +233,11 @@ def get_args():
                         help='Extension mapping: pass this once for each '
                              'mapping; defaults to "-x rpgmvp:png -x png:png"')
 
+    parser.add_argument('-2', '--rm2k',
+                        action='store_true',
+                        help='Indicates RPGM2k files; alias for '
+                             '"-u -x xyz:png -i Picture"')
+
     parser.add_argument('-r', '--root',
                         type=abspath,
                         default='.',
@@ -180,8 +245,6 @@ def get_args():
                         help='Root directory; defaults to current directory')
 
     parser.add_argument('-i', '--in', dest='indir',
-                        type=os.path.normpath,
-                        default='www/img/pictures',
                         metavar='PATH',
                         help='Relative path to directory storing encrypted '
                              'files; defaults to "www/img/pictures"')
@@ -194,9 +257,21 @@ def get_args():
                              'output; leave blank to infer from input_dir')
 
     args = parser.parse_args()
+
+    if not args.indir:
+        args.indir = os.path.normpath(
+            'Picture' if args.rm2k else 'www/img/pictures')
+
     if not args.outdir:
         args.outdir = os.path.split(args.indir)[-1]
 
+    if args.outdir == args.indir:
+        args.outdir += '_decrypted'
+
+    if args.rm2k:
+        args.unencrypted = False
+        args.key = True
+        args.extension.append('xyz:png')
     return args
 
 
@@ -224,9 +299,11 @@ def main():
                     return
 
         dec = Decryptor(root, key)
+        dec2k = Decryptor2k(root, key)
 
         for file, ext in select_files(indir, list(exts.keys())):
-            dec.decrypt_file(file, args.outdir, ext, exts[ext], indir)
+            d = dec2k if ext == 'xyz' else dec
+            d.decrypt_file(file, outdir, ext, exts[ext], indir)
 
     finally:
         os.chdir(original_dir)
