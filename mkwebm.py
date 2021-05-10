@@ -34,6 +34,7 @@ import os
 from os.path import exists
 import re
 from subprocess import run, STDOUT, DEVNULL
+import traceback
 from typing import Tuple
 
 from apng import APNG, PNG  # pip install apng
@@ -55,11 +56,14 @@ VERBOSITY = 1
 # Set True to write frames anyway (warning: slow!)
 FORCE_WRITE_FRAMES = False
 
+DEFAULT_CACHE_FILE = '.mkwebm'
+CUES_OPTION_KEY = 'options'
+
 OPTION_TYPES = {
     'fps': int,
-    'rescale': float,
-    'charset': str,  # 'int' or 'ascii' or 'fullwidth'
-    'align': str, # [w|s|c]  (compass cardinals) (warning: slow!)
+    'rescale': float,   # 1.2 to make 20% bigger
+    'charset': str,     # 'int' or 'ascii' or 'fullwidth'
+    'align': str,       # [w|s|c]  (compass cardinals) (warning: slow!)
     'bgcol': RgbTuple,  # specify 255,0,0 for #ff0000 (no spaces!)
 }
 SYMBOLS_TO_LOOPTYPE = {
@@ -70,21 +74,9 @@ SYMBOLS_TO_LOOPTYPE = {
 
 SCORE = """
 /fps 6
-/align c
+/rescale 1.2
 
-0, Kinoco Haikei, Kinoco_000~4, Haikei shine
-5, halt
 
-0, Kinoco Haikei, Kinoco_008~15, Kinoco Haikei shine
-4, halt
-
-/fps 8
-0, Kinoco Haikei, Kinoco_012~19, Kinoco Haikei shine
-19-12+1, halt
-
-/fps 5
-0,  Kinoco Haikei, Kinoco_020~28@, Kinoco Haikei shine
-8, halt
 """
 
 
@@ -105,8 +97,8 @@ class Loopr:
     __slots__ = 'by val inverse start steps'.split()
 
     def __init__(self, val, by: str = 'A', start=0, steps=-1):
-        self.by = by
-        self.val = val
+        self.by: self.LoopType = by
+        self.val = val  # container with length
         self.inverse = False
         self.start = start
         self.steps = steps
@@ -218,6 +210,7 @@ class NumLoopr(Loopr):
             return cs
         raise NotImplementedError(f'unsupported charset: {charset}')
 
+
 class LazyAccessDict:
     """Maps dotted access to dict key, returns fallback value on absent keys"""
     def __init__(self, dictionary, fallback=None):
@@ -279,11 +272,37 @@ def infinite_generator(value=None):
 
 
 class CueSheet:
+    class NoMatches(BaseException):
+        def __init__(self, filename):
+            self.filename = filename
+            return super().__init__(f'no file matched for "{filename}"')
+
     def __init__(self, cues, max_layers, haltidx, options):
-        self.cues = cues
-        self.max_layers = max_layers
-        self.haltidx = haltidx
-        self.opt = self.load_options(options)
+        # self.cues: Dict[int, list]
+        self.cues: dict = cues
+
+        self.max_layers: int = max_layers
+        self.haltidx: int = haltidx
+        self.opt: LazyAccessDict = self.load_options(options)
+
+    def __hash__(self):
+        opt = []
+        for k, v in self.opt:
+            opt.append((k, v))
+        cues = []
+        for k, v in self.cues.items():
+            if k == CUES_OPTION_KEY:
+                continue
+            cues.append((k, tuple(v)))
+
+        key = (
+            self.max_layers,
+            self.haltidx,
+            sorted(tuple(opt)),
+            sorted(tuple(cues)),
+        )
+        return str(key)
+
 
 
     @classmethod
@@ -350,7 +369,7 @@ class CueSheet:
             imgfile += ext
 
         if not exists(imgfile):
-            return None
+            raise self.NoMatches(imgfile)
 
         img = Image.open(imgfile).convert('RGBA')
 
@@ -382,6 +401,9 @@ class CueSheet:
 
     def knit(self, *layers, pad_dimensions=None):
         images = list(filter(None, [self.open_img(lyr) for lyr in layers]))
+        if not images:
+            return self.NoMatches(layers[0])
+
         if pad_dimensions:
             images = [self.pad_img_to(img, *pad_dimensions) for img in images]
         if self.opt.bgcol:
@@ -426,21 +448,25 @@ class CueSheet:
         for i, layers in enumerate(rendered):
             if VERBOSITY > 0:
                 print(f'{i:>3} | {formatted[i]} | {i:>3}')
-
+            if not any(layers):
+                raise RuntimeError('(nothing to render?)')
+            if self.opt.cached:
+                continue
             frame = self.knit(*layers, pad_dimensions=pad)
             frames.append(frame)
 
-        for i, frame in enumerate(frames):
-            if force_write_frames or outname.endswith('.webm'):
-                filename = fmt % i
-                frame.save(filename)
+        if not self.opt.cached:
+            for i, frame in enumerate(frames):
+                if force_write_frames or outname.endswith('.webm'):
+                    filename = fmt % i
+                    frame.save(filename)
 
-        if outname.endswith('.webm'):
-            self.make_webm(fmt, self.opt.fps, outname)
-        elif outname.endswith('.apng'):
-            self.make_apng(fmt, self.opt.fps, outname, frames)
-        elif outname.endswith('.gif'):
-            self.make_gif(fmt, self.opt.fps, outname, frames)
+            if outname.endswith('.webm'):
+                self.make_webm(fmt, self.opt.fps, outname)
+            elif outname.endswith('.apng'):
+                self.make_apng(fmt, self.opt.fps, outname, frames)
+            elif outname.endswith('.gif'):
+                self.make_gif(fmt, self.opt.fps, outname, frames)
 
 
         if VERBOSITY > 0:
@@ -556,13 +582,13 @@ class Parser:
 
     def parse_stack(self, stacklines):
         cues = {
-            'options': {}
+            CUES_OPTION_KEY: {}
         }
         for line in stacklines:
             if line.startswith(self.optionchar):
                 option = self.parse_option(line)
                 if option:
-                    cues['options'].update(option)
+                    cues[CUES_OPTION_KEY].update(option)
                     continue
                 else:
                     raise ParseError(f'invalid option syntax: "{line}"')
@@ -581,11 +607,11 @@ class Parser:
         options = {}
         for stacklines in self.stacks:
             cues, max_layers = self.parse_stack(stacklines)
-            if cues['options']:
-                options.update(cues['options'])
+            if cues[CUES_OPTION_KEY]:
+                options.update(cues[CUES_OPTION_KEY])
 
             if 0 not in cues:
-                if cues['options']:
+                if cues[CUES_OPTION_KEY]:
                     continue
                 else:
                     raise ParseError(f'missing frame 0 for "{stacklines[0]}"')
@@ -601,8 +627,55 @@ class Parser:
         return cue_sheets
 
 
+def read_cache(cache_file=DEFAULT_CACHE_FILE):
+    if not os.path.exists(cache_file):
+        return []
+    with open(cache_file, 'r', encoding='utf8') as f:
+        return [line.strip() for line in f]
+
+
+def write_cache(cache, cache_file=DEFAULT_CACHE_FILE):
+    orig = 0
+    if os.path.exists(cache_file):
+        with open(cache_file, 'rb') as f:
+            orig = f.read()
+    try:
+        with open(cache_file, 'w', encoding='utf8') as f:
+            f.write('\n'.join(cache))
+    except:
+        print('cache write failed')
+        if orig:
+            with open(cache_file, 'wb') as f:
+                f.write(orig)
+
+def hashed(outfile, cuesheet) -> str:
+    return f'{outfile} {cuesheet.__hash__()}'
+
 
 if __name__ == '__main__':
     p = Parser(SCORE)
-    for i, cs in enumerate(p.parse()):
-        cs.compose(f'{i + 1:>03}{OUT_FORMAT}')
+
+    cached = read_cache()
+    new_cache = []
+    new = 0
+    try:
+        for i, cue in enumerate(p.parse()):
+            outfile = f'{i + 1:>03}{OUT_FORMAT}'
+            
+            h = hashed(outfile, cue)
+            is_cached = h in cached
+            try:
+                cue.opt.cached = is_cached
+                cue.compose(outfile)
+                new_cache.append(h)
+
+                if not is_cached:
+                    new += 1
+
+            except BaseException as e:
+                traceback.print_tb(e)
+                continue
+    finally:
+        write_cache(new_cache)
+    out_of_cached = f'({len(cached)} existing cached)' if len(cached) else ''
+    print(f'wrote {new} new files {out_of_cached}')
