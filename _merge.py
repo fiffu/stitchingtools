@@ -41,6 +41,9 @@ COMMENT_PREFIX = '#'
 # called a suffix but you can put this symbol anywhere in the filename.
 MULTIPLY_SUFFIX = '*'
 
+PASTE_POSITION = '@'
+PASTE_POSITION_DELIM = ','
+
 
 class BlendMode(Enum):
     """Enumerates available blend modes"""
@@ -69,12 +72,12 @@ def parse_line(line):
         line = line.replace(MULTIPLY_SUFFIX, '')
 
     # Find offset in form @x,y
-    file, *offset = line.split('@', 1)
+    file, *offset = line.split(PASTE_POSITION, 1)
     file = file.strip()
 
     # Normalize offset to Tuple(Int)
     if offset:
-        offset = offset[0].split(',', 1)
+        offset = offset[0].split(PASTE_POSITION_DELIM, 1)
         offset = tuple(int(o) for o in offset)
     else:
         offset = ()
