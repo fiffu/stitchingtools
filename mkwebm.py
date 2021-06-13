@@ -8,30 +8,39 @@ Usage: edit the SCORE string below then call:
 * A `temp` folder is created to store intermediate knitted frames and can be
   deleted after the script completes.
 
-____Usage (extended)____
-You define a score, each containing CueSheets separated by a blank line.
-CueSheets `start` an animation from idx 0 and `halt` at the specified frame.
-(specifying "30, halt" means the last frame should be idx 29)
 
-Each CueSheet specifies `stack` of frame components that can be "knitted"
-(composited) into a single complete frame before it is "composed" into the
-output image/video.
+## Usage (extended) ##
+This script reads CueSheets, a simple DSL that specifies what frames to include, when,
+how the frames should loop, when to stop showing them, and what other frames overlay it.
+CueSheets start at index 0; the `halt` sentinel indicates the last frame index.
 
-Each component is defined by a filename, frame_range, and LoopType.
-* filename doesn't include the extension (defaulting to .png).
-* frame_range uses ~ as delimiter: a01~3 => [a01, a02, a03]
-* LoopType comes last. a01~11^ => [a01 ... a10, a11, a10 ... a01, a02 ...]
+Each line of the CueSheet specifies a comma-delimited _stack_ of frames.
+Each frame is defined by a filename (no extension), frame_range, and LoopType.
+* filename can include dested dirs and doesn't include the extension (defaulting to .png).
+* frame_range uses ~ as delimiter separating the cardinal frames.
+* LoopType comes last. There are several LoopTypes, see below.
+* Each CueSheet is separated by one or more empty lines.
 
-Various options are available for CueSheets, prefixed with /
+Examples
+    a0~2^   ->  a0.png   a1.png   a2.png   a1.png   a0.png   a1.png   ...
+    a00~2>  ->  a00.png  a01.png  a02.png  a01.png  a00.png  a01.png  ...
+
+Various _options_ are available for CueSheets, prefixed with `/`.
 See OPTION_TYPES below for a summary of what they do.
-See also other options like FPS, OUT_FORMAT, VERBOSITY below.
+See also other flags like FPS, OUT_FORMAT, VERBOSITY below.
+
+
+## /auto ##
+The `/auto` function detects animation frames in the current working directory by looking
+for filenames named in running order.
 """
 
+from collections import defaultdict
 from glob import glob
 import io
 from itertools import zip_longest
 import os
-from os.path import exists
+from os.path import exists, join as pathjoin
 import re
 from subprocess import run, STDOUT, DEVNULL
 import traceback
@@ -61,10 +70,12 @@ CUES_OPTION_KEY = 'options'
 
 OPTION_TYPES = {
     'fps': int,
-    'rescale': float,   # 1.2 to make 20% bigger
+    'rescale': float,   # 1.2 to make 20% bigger (warning: slow!)
     'charset': str,     # 'int' or 'ascii' or 'fullwidth'
     'align': str,       # [w|s|c]  (compass cardinals) (warning: slow!)
     'bgcol': RgbTuple,  # specify 255,0,0 for #ff0000 (no spaces!)
+    'auto': str,        # (optional) 'splitby=_'
+    'cd': str,          # prepend all files with this string
 }
 SYMBOLS_TO_LOOPTYPE = {
     '^': 'ABA',
@@ -74,11 +85,65 @@ SYMBOLS_TO_LOOPTYPE = {
 
 SCORE = """
 /fps 6
-/rescale 1.2
+/rescale 3
+/align s
 
-
+/auto
 """
 
+def auto_detect_sprite_series(charset, kwargs=None, folder='./'):
+    digits = NumLoopr.get_charset(charset, 'ascii')
+
+    # parse detection args
+    kwargs = kwargs or []
+    options = {
+        'split': '_',    # split=_
+        'loop': '',      # loop=
+        'folder': './',  # folder=./
+    }
+    for opt in kwargs:
+        o, *val = opt.split('=')
+        options[o] = val[0] if val else ''
+
+    # glob all files
+    files = [
+        os.path.splitext(os.path.basename(f))[0]
+        for f in glob(options['folder'] + '*.png')
+    ]
+
+    # filter and index files
+    sep = options.get('split')
+    dd = defaultdict(list)
+    for file in files:
+        key, *idx = file.rsplit(sep, 1)
+        if not idx:
+            print(f'{file} does not contain {sep}, skipping')
+        idx = idx[0]
+        if not all([i in digits for i in idx]):
+            print(f'{file}{sep}{idx} not in {charset} {digits}, skipping')
+            continue
+        dd[key].append(idx)
+
+    out = []
+    loop = options['loop']
+    loopby = SYMBOLS_TO_LOOPTYPE.get(loop)
+    for file, indices in dd.items():
+        if len(indices) < 2:
+            continue
+        start, *_, end = sorted(indices)
+        if loopby == 'ABA':
+            e = int(end)
+            e += max(0, e - 2)
+            end = ''.join(digits[digit] for digit in str(e))
+
+        n = len(indices)
+        s = [
+            f'0,   {file}{sep}{start}~{end}{loop}',
+            f'{n}, halt'
+        ]
+        out.append(s)
+
+    return out
 
 
 class ParseError(ValueError):
@@ -204,8 +269,8 @@ class NumLoopr(Loopr):
         return val
 
     @classmethod
-    def get_charset(cls, charset):
-        cs = cls.CHARSETS.get(charset)
+    def get_charset(cls, charset, fallback=None):
+        cs = cls.CHARSETS.get(charset, cls.CHARSETS.get(fallback))
         if cs:
             return cs
         raise NotImplementedError(f'unsupported charset: {charset}')
@@ -364,6 +429,9 @@ class CueSheet:
     def open_img(self, imgfile, ext='.png'):
         if not imgfile:
             return None
+
+        if self.opt.cd:
+             imgfile = pathjoin(self.opt.cd, imgfile)
 
         if not imgfile.endswith(ext):
             imgfile += ext
@@ -542,8 +610,8 @@ class Parser:
 
 
     @classmethod
-    def read_file(cls, file, encoding='utf8', **kwargs):
-        with open(file, mode, encoding) as f:
+    def from_file(cls, file, encoding='utf8', **kwargs):
+        with open(file, 'r', encoding) as f:
             text = f.read()
             return cls(text, **kwargs)
 
@@ -573,11 +641,16 @@ class Parser:
 
     @classmethod
     def parse_option(cls, line):
+        """Parses option line.
+
+        /foo a b c -> {'foo': ['a', 'b', 'c']}
+        /foo abc -> {'foo': 'abc'}
+        """
         line = line[len(cls.optionchar):]
         opt, *optval = line.split()
         if len(optval) == 1:
             return {opt: optval[0]}
-        return {}
+        return {opt: optval}
 
 
     def parse_stack(self, stacklines):
@@ -609,6 +682,13 @@ class Parser:
             cues, max_layers = self.parse_stack(stacklines)
             if cues[CUES_OPTION_KEY]:
                 options.update(cues[CUES_OPTION_KEY])
+
+            if 'auto' in options:
+                extra_stacks = auto_detect_sprite_series(options.get('charset'),
+                                                         options['auto'])
+                del options['auto']
+                self.stacks.extend(extra_stacks)
+                print('\n\n'.join(map(repr, self.stacks)))
 
             if 0 not in cues:
                 if cues[CUES_OPTION_KEY]:
@@ -661,7 +741,7 @@ if __name__ == '__main__':
     try:
         for i, cue in enumerate(p.parse()):
             outfile = f'{i + 1:>03}{OUT_FORMAT}'
-            
+
             h = hashed(outfile, cue)
             is_cached = h in cached
             try:
@@ -673,7 +753,7 @@ if __name__ == '__main__':
                     new += 1
 
             except BaseException as e:
-                traceback.print_tb(e)
+                traceback.print_tb(e.__traceback__)
                 continue
     finally:
         write_cache(new_cache)
