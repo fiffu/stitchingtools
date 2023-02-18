@@ -16,14 +16,15 @@ CueSheets start at index 0; the `halt` sentinel indicates the last frame index.
 
 Each line of the CueSheet specifies a comma-delimited _stack_ of frames.
 Each frame is defined by a filename (no extension), frame_range, and LoopType.
-* filename can include dested dirs and doesn't include the extension (defaulting to .png).
+* filename can include nested dirs and doesn't include the extension (defaulting to .png).
 * frame_range uses ~ as delimiter separating the cardinal frames.
 * LoopType comes last. There are several LoopTypes, see below.
 * Each CueSheet is separated by one or more empty lines.
 
-Examples
-    a0~2^   ->  a0.png   a1.png   a2.png   a1.png   a0.png   a1.png   ...
-    a00~2>  ->  a00.png  a01.png  a02.png  a02.png  a02.png  a02.png  ...
+LoopType examples:
+    a0~2^  ->  a0.png  a1.png  a2.png  a1.png  a0.png  a1.png  ...
+    a0~2>  ->  a0.png  a1.png  a2.png  a2.png  a2.png  a2.png  ...
+    a0~2@  ->  a0.png  a1.png  a2.png  a1.png  a0.png  a1.png  ...
 
 Various _options_ are available for CueSheets, prefixed with `/`.
 See OPTION_TYPES below for a summary of what they do.
