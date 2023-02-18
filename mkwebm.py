@@ -42,7 +42,7 @@ from itertools import zip_longest
 import os
 from os.path import exists, join as pathjoin
 import re
-from subprocess import run, STDOUT, DEVNULL
+from subprocess import run, DEVNULL
 import traceback
 from typing import Tuple
 
@@ -118,6 +118,7 @@ def auto_detect_sprite_series(charset, kwargs=None, folder='./'):
         key, *idx = file.rsplit(sep, 1)
         if not idx:
             print(f'{file} does not contain {sep}, skipping')
+            continue
         idx = idx[0]
         if not all([i in digits for i in idx]):
             print(f'{file}{sep}{idx} not in {charset} {digits}, skipping')
@@ -156,8 +157,8 @@ class Loopr:
         AB = 'AB'      # 0123
         ABB = 'ABB'    # 0123333
         ABAB = 'ABAB'  # 0123 0123
-        ABA = 'ABA'    # 0 123 210 123 210
-        ABBA = 'ABBA'  # 0123 3210 0123 3210
+        ABA = 'ABA'    # 012321 012321
+        ABBA = 'ABBA'  # 01233210 01233210
 
     __slots__ = 'by val inverse start steps'.split()
 
@@ -221,8 +222,6 @@ class Loopr:
                     # For ABBA, yield the extra "A" or "B" before stepping n
                     if self.by == lty.ABBA:
                         yield val[0] if n == 0 else val[-1]
-                    else:
-                        first = False
                 n += step
 
     def loop(self, start=None, steps=None):
@@ -260,8 +259,7 @@ class NumLoopr(Loopr):
         """Only works for base10"""
         val = []
         # bind globals
-        int_, str_ = int, str
-        charset_len = len(charset)
+        int_ = int
         for n in range(start, upper_bound_inclusive + 1):
             num = ('{:0%d}' % places).format(n)
             mapped = ''.join(charset[int_(d)] for d in num)
@@ -486,6 +484,15 @@ class CueSheet:
 
 
     def compose(self, outname, force_write_frames=FORCE_WRITE_FRAMES):
+        if VERBOSITY > 0:
+            print(
+                '', outname,
+                ' '.join(f'{k}={v}' for k, v in self.opt),
+                ' (cached)' if self.opt.cached else '',
+            )
+        if self.opt.cached:
+            return
+
         fmt = 'temp/%05d.png'
 
         if exists('temp'):
@@ -511,15 +518,11 @@ class CueSheet:
                 if h > pad[1]:
                     pad[1] = h
 
-        if VERBOSITY > 0:
-            print('', outname, ' '.join(f'{k}={v}' for k, v in self.opt))
         for i, layers in enumerate(rendered):
             if VERBOSITY > 0:
                 print(f'{i:>3} | {formatted[i]} | {i:>3}')
             if not any(layers):
                 raise RuntimeError('(nothing to render?)')
-            if self.opt.cached:
-                continue
             frame = self.knit(*layers, pad_dimensions=pad)
             frames.append(frame)
 
@@ -627,7 +630,7 @@ class Parser:
                     stacks.append(buffer.copy())
                     buffer = []
 
-            info, *comment = line.split(cls.commentchar, 1)
+            info, *_ = line.split(cls.commentchar, 1)
             info = info.strip()
             if info:
                 buffer.append(info)
@@ -752,8 +755,8 @@ if __name__ == '__main__':
                 if not is_cached:
                     new += 1
 
-            except BaseException as e:
-                traceback.print_tb(e.__traceback__)
+            except BaseException:
+                print(traceback.format_exc())
                 continue
     finally:
         write_cache(new_cache)
