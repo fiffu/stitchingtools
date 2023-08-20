@@ -2,7 +2,7 @@ from argparse import ArgumentParser
 import json
 from glob import glob
 import os
-
+from concurrent.futures import ThreadPoolExecutor
 
 # 2k-specific
 import io
@@ -206,7 +206,6 @@ class Decryptor2k(Decryptor):
                 a = 0 if b == self.PALETTE_SIZE else 0xFF
                 img_pixels[x, y] = (r, g, b, a)
 
-
         buf = io.BytesIO()
         img.save(buf, 'PNG')
         buf.seek(0)
@@ -227,11 +226,11 @@ def get_args():
 
     parser.add_argument('-x', dest='extension',
                         type=str,
-                        default=['rpgmvp:png', 'png:png'],
+                        default=['rpgmvp:png', 'png:png', 'png_:png'],
                         action='append',
                         metavar='FROM:TO',
                         help='Extension mapping: pass this once for each '
-                             'mapping; defaults to "-x rpgmvp:png -x png:png"')
+                             'mapping; defaults to "-x rpgmvp:png -x png:png -x png_:png"')
 
     parser.add_argument('-2', '--rm2k',
                         action='store_true',
@@ -301,9 +300,11 @@ def main():
         dec = Decryptor(root, key)
         dec2k = Decryptor2k(root, key)
 
-        for file, ext in select_files(indir, list(exts.keys())):
-            d = dec2k if ext == 'xyz' else dec
-            d.decrypt_file(file, outdir, ext, exts[ext], indir)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for file, ext in select_files(indir, list(exts.keys())):
+                d = dec2k if ext == 'xyz' else dec
+                pool.submit(d.decrypt_file, file, outdir, ext, exts[ext], indir)
+                # d.decrypt_file(file, outdir, ext, exts[ext], indir)
 
     finally:
         os.chdir(original_dir)
