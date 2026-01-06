@@ -184,7 +184,7 @@ class Main:
             raise RuntimeError('cannot detect game version')
 
         if not self.args.output_folder.exists():
-            self.args.output_folder.mkdir(parents=True)
+            self.args.output_folder.mkdir(parents=True, exist_ok=True)
 
         inputs = list(decryptor.walk_pictures())
         bytes_written = self.decrypt_all(decryptor, inputs)
