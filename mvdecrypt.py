@@ -178,6 +178,29 @@ class RMMV2(Decryptor):
     EXTENSION = '.png_'
 
 
+class GameCreatorTool(Decryptor):
+    PICTURES_PATH = 'asset/image'.split('/')
+    EXTENSION = '.png'
+
+    def valid(self) -> bool:
+        breakpoint()
+        return any(self.walk_pictures())
+    
+    def decrypt(self, path: Path) -> bytearray:
+        crypt = self._read_bytearray(path)
+
+        # Fix magic bytes
+        crypt[1] ^= crypt[2]
+        crypt[2] ^= crypt[1]
+        crypt[1] ^= crypt[2]
+
+        # Remove middle byte
+        pos = (len(crypt) - 1) // 2
+        crypt = crypt[:pos] + crypt[pos+1:]
+
+        return crypt
+
+
 class Main:
     def __init__(self, args: Args):
         self.args = args
