@@ -64,6 +64,8 @@ class Args:
 
 
 class Decryptor:
+    VERSIONS = []
+
     HEADER_LENGTH = 16
     MAGIC_SIGNATURE = "5250474d56000000"
     MAGIC_VERSION = "000301"
@@ -76,6 +78,10 @@ class Decryptor:
     def __init__(self, root: Path):
         self.root = root
         self.key = None
+
+    def __init_subclass__(cls, **kwargs):
+        cls.VERSIONS.append(cls)
+        super().__init_subclass__(**kwargs)
 
     @property
     def pictures_path(self):
@@ -173,8 +179,6 @@ class RMMV2(Decryptor):
 
 
 class Main:
-    VERSIONS = [RMMV, RMMV2]
-
     def __init__(self, args: Args):
         self.args = args
 
@@ -204,7 +208,7 @@ class Main:
         return written
 
     def detect(self, root_path: Path) -> Decryptor:
-        for version in self.VERSIONS:
+        for version in Decryptor.VERSIONS:
             if version(root_path).valid():
                 return version(root_path)
 
