@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from base64 import b64decode
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -7,6 +8,11 @@ import json
 from pathlib import Path
 import sys
 from typing import Generator
+
+
+# pip install git+https://github.com/blluv/pgmm_decrypt.git
+from pgmm_decrypt import decrypt_pgmm_key, decrypt_pgmm_resource
+
 
 def progressbar(iterable, length=None):
     """Prints progressbar using click. Noop if click isn't installed."""
@@ -65,7 +71,6 @@ class Args:
 
 class Decryptor:
     VERSIONS = []
-
     HEADER_LENGTH = 16
     MAGIC_SIGNATURE = "5250474d56000000"
     MAGIC_VERSION = "000301"
@@ -116,10 +121,7 @@ class Decryptor:
         return Path(p)
 
     def valid(self) -> bool:
-        if self.encryption_key:
-            for _ in self.walk_pictures():
-                return True
-        return False
+        return self.encryption_key and any(self.walk_pictures())
 
     def decrypt(self, path: Path) -> bytearray:
         crypt = self._read_bytearray(path)
@@ -148,22 +150,25 @@ class Decryptor:
             content = file.read()
             return bytearray(content)
 
-    def _load_key(self, path: Path) -> bytearray:
+    def _load_key(self, path: Path) -> bytearray | bytes:
         try:
             contents = path.read_text(encoding='utf8')
             contents_json = json.loads(contents)
 
-            key: str = contents_json['encryptionKey']
-            key_pairwise = [key[i:i+2] for i in range(0, len(key), 2)]
-
-            parse_base16 = lambda n: int(n, 16)
-            return bytearray(parse_base16(pair) for pair in key_pairwise)
+            return self._parse_key(contents_json)
         except FileNotFoundError:
             return None
         except KeyError:
             exit("Empty encryption key in game data. Most likely it's not encrypted!")
         except BaseException as e:
             raise RuntimeError(f'Found {path} but failed to read encryption key ({format_error(e)})')
+
+    def _parse_key(self, contents_json):
+        key: str = contents_json['encryptionKey']
+        key_pairwise = [key[i:i+2] for i in range(0, len(key), 2)]
+
+        parse_base16 = lambda n: int(n, 16)
+        return bytearray(parse_base16(pair) for pair in key_pairwise)
 
 
 class RMMV(Decryptor):
@@ -183,8 +188,10 @@ class GameCreatorTool(Decryptor):
     EXTENSION = '.png'
 
     def valid(self) -> bool:
-        breakpoint()
-        return any(self.walk_pictures())
+        try:
+            return any(self.walk_pictures())
+        except FileNotFoundError:
+            return None
     
     def decrypt(self, path: Path) -> bytearray:
         crypt = self._read_bytearray(path)
@@ -199,6 +206,22 @@ class GameCreatorTool(Decryptor):
         crypt = crypt[:pos] + crypt[pos+1:]
 
         return crypt
+
+
+class PixelGameMakerMV(Decryptor):
+    PICTURES_PATH = 'Resources/img'.split('/')
+    SYSTEM_JSON_PATH = 'Resources/data/info.json'.split('/')
+    EXTENSION = '.png'
+
+    def _parse_key(self, contents_json):
+        key: str = contents_json['key']
+        key_bytes = b64decode(key)
+
+        return decrypt_pgmm_key(key_bytes)
+    
+    def decrypt(self, path: Path) -> bytearray:
+        crypt = bytes(self._read_bytearray(path))
+        return decrypt_pgmm_resource(crypt, self.encryption_key)
 
 
 class Main:
@@ -240,7 +263,7 @@ class Main:
 
         output_path = self.args.output_folder / output_relpath
         if not output_path.parent.exists():
-            output_path.parent.mkdir(parents=True)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
         clear = decryptor.decrypt(input_file)
         return output_path.write_bytes(clear)
