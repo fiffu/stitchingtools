@@ -73,6 +73,7 @@ class BlendMode(Enum):
 
 @dataclass
 class LayerSpec:
+    chdir: str
     file: str
     mode: BlendMode
     offset: tuple[int, int]
@@ -110,6 +111,9 @@ class Parser:
     # Works just like a Python comment. Inline within a line of data is okay.
     COMMENT_PREFIX = '#'
 
+    # If found at EOL, indicates subsequent lines would be prefixed by this string
+    CHDIR_SUFFIX = '/'
+
     # Place this immediately after a filename to indicate this layer should be
     # composited using a multiply blend mode instead of a regular overlap. It's
     # called a suffix but you can put this symbol anywhere in the filename.
@@ -119,7 +123,7 @@ class Parser:
     PASTE_POSITION_DELIM = ','
 
     @classmethod
-    def parse_line(cls, line: str) -> LayerSpec:
+    def parse_line(cls, line: str, prepend='') -> LayerSpec:
         # Remove inline comments, if any
         line, *comment = line.split(cls.COMMENT_PREFIX, 1)
         comment = comment[0] if comment else ''
@@ -135,6 +139,13 @@ class Parser:
         file, *offset = line.split(cls.PASTE_POSITION, 1)
         file = file.strip()
 
+        # Filename adjustments
+        chdir = ''
+        if file.endswith(cls.CHDIR_SUFFIX):
+            chdir = file
+        elif file:
+            file = f'{prepend}{file}{cls.EXT}'
+
         # Normalize offset to tuple[int, int]
         if offset:
             offset = offset[0].split(cls.PASTE_POSITION_DELIM, 1)
@@ -143,7 +154,8 @@ class Parser:
             offset = ()
 
         return LayerSpec(
-            file=file + cls.EXT if file else '',
+            chdir=chdir,
+            file=file,
             mode=mode,
             offset=offset,
             comment=comment,
@@ -163,10 +175,15 @@ class Parser:
         # Flush groups of layers into a list of lists
         layers_list: list[list[LayerSpec]] = []
 
+        prepend = ''
         for line in lines:
-            parsed = Parser.parse_line(line)
+            parsed = Parser.parse_line(line, prepend=prepend)
 
-            # Non-empty line: Add to buffer
+            # Relative dir: prefix to subsequent lines
+            if parsed.chdir:
+                prepend = parsed.chdir
+                continue
+            # Non-empty line: add to buffer
             if parsed.file:
                 layers.append(parsed)
                 continue
