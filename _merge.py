@@ -9,14 +9,17 @@ Usage:
 Steps:
     1. Ensure you are using Python 3.
     2. Move this file to the same dir as the image files you want composited.
-    3. Define layer files to be composited in the input file (_info.txt by
-       default). The layers will be stacked in the order they appear in the
-       input file (preceding files overlay subsequent files).
-    4. Add a blank line to start a new stack.
-    5. Take note of comments and multiply-mode notation (see docstrings below).
-    6. Review optional args for running this script:
+    3. Define stacks in the INFO string variable below. Each stack makes one output file.
+       Each stack consists of layers referenced by filename; file extension is optional.
+       Layers are composited in the order they appear in the stack.
+       - Use a trailing / to prefix a relative path to subsequent layers.
+       - Leave an empty line to start a new stack.
+       - Use # to leave comments.
+       - Use * to use multiply blend mode for the layer, instead of the default additive.
+       - Use @x,y notation to offset the layer by x,y pixels relative to top left.
+    4. Composited files are placed in the output directory (default: './buffer').
+    5. To browse helpful options for this script, such as automatic re-running:
          python _merge.py -h
-    7. Composited files are placed in the output directory (default: 'buffer').
 """
 
 from argparse import ArgumentParser
@@ -24,32 +27,41 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import os
+import subprocess
+import sys
 import threading
+import time
 
 from blend_modes import multiply   # pip install blend_modes
 import numpy                       # pip install numpy (blend_modes depends on matrices)
 from PIL import Image              # pip install Pillow
 from rich.progress import Progress # pip install rich
+from rich.console import Console
 
 
 INFO = """
-
 CG01/
 CG_01_10
 CG_01_00
 
+# a comment
 CG02/
-CG_02_11
-CG_02_01
-
+CG_02_21*
+CG_02_11@124,70  # another comment
+CG_02_00
 """
-
 
 
 
 DEFAULT_CACHE_FILE = '._merge'
 
-progress = Progress()
+
+class ConsoleWithPID(Console):
+    def log(self, *a, **k):
+        prefix = f'[green][{os.getpid()}][/green]'
+        return super().log(prefix, *a, **k)
+
+progress = Progress(console=ConsoleWithPID())
 console = progress.console
 
 
@@ -61,7 +73,6 @@ class BlendMode(Enum):
 
 @dataclass
 class LayerSpec:
-    chdir: str
     file: str
     mode: BlendMode
     offset: tuple[int, int]
@@ -90,6 +101,7 @@ class Stack:
         )
         return f'{filename} {layers_hash}'
 
+
 class Parser:
     # Specify the file extension of the input images expected by this script so you
     # don't have to repeat in in the input file.
@@ -97,9 +109,6 @@ class Parser:
 
     # Works just like a Python comment. Inline within a line of data is okay.
     COMMENT_PREFIX = '#'
-
-    # If found at EOL, indicates subsequent lines would be prefixed by this string
-    CHDIR_SUFFIX = '/'
 
     # Place this immediately after a filename to indicate this layer should be
     # composited using a multiply blend mode instead of a regular overlap. It's
@@ -110,7 +119,7 @@ class Parser:
     PASTE_POSITION_DELIM = ','
 
     @classmethod
-    def parse_line(cls, line: str, prepend: str='') -> LayerSpec:
+    def parse_line(cls, line: str) -> LayerSpec:
         # Remove inline comments, if any
         line, *comment = line.split(cls.COMMENT_PREFIX, 1)
         comment = comment[0] if comment else ''
@@ -126,13 +135,6 @@ class Parser:
         file, *offset = line.split(cls.PASTE_POSITION, 1)
         file = file.strip()
 
-        # Filename adjustments
-        chdir = ''
-        if file.endswith(cls.CHDIR_SUFFIX):
-            chdir = file
-        elif file:
-            file = f'{prepend}{file}{cls.EXT}'
-
         # Normalize offset to tuple[int, int]
         if offset:
             offset = offset[0].split(cls.PASTE_POSITION_DELIM, 1)
@@ -141,18 +143,17 @@ class Parser:
             offset = ()
 
         return LayerSpec(
-            chdir=chdir,
-            file=file,
+            file=file + cls.EXT if file else '',
             mode=mode,
             offset=offset,
             comment=comment,
         )
-    
+
     @classmethod
     def parse(cls, args, lines: str) -> list[Stack]:
         """
         Reads input file and parses into stacks.
-        
+
         Each stack is a list of layers, so the output is list[list[Layer]].
         """
         lines: list[str] = INFO.splitlines()
@@ -162,13 +163,8 @@ class Parser:
         # Flush groups of layers into a list of lists
         layers_list: list[list[LayerSpec]] = []
 
-        prepend = ''
         for line in lines:
-            parsed = Parser.parse_line(line, prepend=prepend)
-
-            if parsed.chdir:
-                prepend = parsed.chdir
-                continue
+            parsed = Parser.parse_line(line)
 
             # Non-empty line: Add to buffer
             if parsed.file:
@@ -269,7 +265,7 @@ class OverwritingCache:
         err = None
         try:
             yield cache
-        
+
         except BaseException as exc:
             err = exc
 
@@ -296,7 +292,7 @@ class OverwritingCache:
 
     def buffer(self, hashed: str):
         self._buffer.add(hashed)
-    
+
     def diff(self):
         return self._buffer.difference(self._initial)
 
@@ -325,34 +321,62 @@ class ResultThread(threading.Thread):
         return wrapper
 
 
-def main():
-    parser = ArgumentParser()
+class RestartOnChanges:
+    def __init__(self, other_files: list[str] = []):
+        self.this_file = os.path.abspath(sys.argv[0])
+        self.files = [self.this_file] + other_files
+        self.process = None
+        self.flags = ['-w', '--watch']
 
-    parser.add_argument('-C', '--ignore-cache',
-                        action='store_true')
+    def start(self):
+        """Monitors this file and restarts the script if it changes."""
+        timestamps = self._get_timestamps()
 
-    parser.add_argument('-d', '--digits',
-                        action='count',
-                        default=3,
-                        help='number of digits to zero-pad to; default=3 (-ddd)')
+        while True:
+            time.sleep(1)
 
-    parser.add_argument('-o', '--outdir',
-                        type=str,
-                        default='buffer',
-                        help="folder to store output files; default='buffer'")
+            new_timestamps = self._get_timestamps()
 
-    parser.add_argument('-p', '--prefix',
-                        type=str,
-                        default='',
-                        help='optional prefix for output filenames')
+            diff = self._diff(timestamps, new_timestamps)
+            if diff:
+                timestamps = new_timestamps
 
-    parser.add_argument('-u', '--suffix',
-                        type=str,
-                        default='',
-                        help='optional suffix for output filenames')
+                console.log(f'Detected changes in {", ".join(diff)}')
+                self._cleanup()
+                self._restart()
 
-    args = parser.parse_args()
+    def _diff(self, a: dict, b: dict):
+        return [key for key, value in a.items() if b.get(key, None) != value]
 
+    def _get_timestamps(self):
+        return {file: self._timestamp(file) for file in self.files}
+
+    def _timestamp(self, file):
+        """Helper to generate a tuple of mtimes. Uses -1.0 if a file is missing."""
+        try:
+            return os.path.getmtime(file)
+        except FileNotFoundError:
+            return -1
+
+    def _cleanup(self):
+        if self.process:
+            self.process.terminate()
+            self.process.wait()
+
+    def _restart(self):
+        args = self._trim_flags(sys.argv[1:])
+        self.process = subprocess.Popen([sys.executable, self.this_file] + args)
+
+    def _trim_flags(self, args: list[str]):
+        for target in self.flags:
+            try:
+                args.remove(target)
+            except ValueError:
+                pass
+        return args
+
+
+def main(args):
     # Prep dir for output
     if not os.path.exists(args.outdir):
         os.mkdir(args.outdir)
@@ -383,8 +407,43 @@ def main():
             console.log(f'New files: {len(cache.diff())}')
 
 if __name__ == '__main__':
+    parser = ArgumentParser()
+
+    parser.add_argument('-w', '--watch',
+                        action='store_true',
+                        help='auto re-run this script when changes are detected')
+
+    parser.add_argument('-C', '--ignore-cache',
+                        action='store_true')
+
+    parser.add_argument('-d', '--digits',
+                        action='count',
+                        default=3,
+                        help='number of digits to zero-pad to; default=3 (-ddd)')
+
+    parser.add_argument('-o', '--outdir',
+                        type=str,
+                        default='buffer',
+                        help="folder to store output files; default='buffer'")
+
+    parser.add_argument('-p', '--prefix',
+                        type=str,
+                        default='',
+                        help='optional prefix for output filenames')
+
+    parser.add_argument('-u', '--suffix',
+                        type=str,
+                        default='',
+                        help='optional suffix for output filenames')
+
+    args = parser.parse_args()
+
     try:
-        main()
+        main(args)
+
+        if args.watch:
+            RestartOnChanges().start()
+
     except KeyboardInterrupt:
         console.log('Aborted')
         pass
