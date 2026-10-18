@@ -248,13 +248,15 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 #msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--mut);padding:20px;text-align:center}
 #info{padding:0 16px 12px;color:var(--mut)}
 #layers,#obs{flex:1;overflow-y:auto;min-height:0}
-#picker.locked #layers,#picker.locked #send{opacity:.4;pointer-events:none}
+#picker.locked #layers,#picker.locked .grp{opacity:.4;pointer-events:none}
 .row{padding:8px 10px;border-bottom:1px solid var(--line)}
 .row.off .vars{opacity:.4}
 .head{display:flex;gap:6px;align-items:center;margin-bottom:6px}
 .head input{width:22px;height:22px;margin:0 6px 0 2px;accent-color:var(--acc)}
 .name{flex:1;min-width:0;margin-left:4px;font:600 13px ui-monospace,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vars{display:flex;flex-wrap:wrap;gap:4px;max-height:150px;overflow-y:auto}
+.vars{display:flex;flex-wrap:wrap;gap:4px}
+.grp{display:flex;gap:12px;align-items:center}
+#all{width:22px;height:22px;margin:0 0 0 2px;accent-color:var(--acc)}
 .fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
 .fn.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}
 .ob{display:grid;grid-template-columns:76px 1fr auto;gap:10px;padding:10px;border-bottom:1px solid var(--line);cursor:pointer;align-items:start}
@@ -279,7 +281,7 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
   <div id="info"></div>
  </section>
  <section id="picker">
-  <div class="bar"><button id="send" class="pri">Send to outbox</button><span id="count"></span></div>
+  <div class="bar"><div class="grp"><input type="checkbox" id="all" title="Show or hide all layers"><button id="send" class="pri">Send to outbox</button></div><span id="count"></span></div>
   <div id="layers"></div>
  </section>
  <section id="outbox">
@@ -359,7 +361,12 @@ async function load(dir){
   }catch(e){toast(e.message);$('#dir').value=S.dir}
 }
 
-function count(){$('#count').textContent=S.layers.filter(l=>l.vis).length+' of '+S.layers.length+' layers shown'}
+function count(){
+  const n=S.layers.filter(l=>l.vis).length, all=$('#all');
+  $('#count').textContent=n+' of '+S.layers.length+' layers shown';
+  all.checked=n>0&&n===S.layers.length; all.indeterminate=n>0&&n<S.layers.length;
+}
+$('#all').onchange=()=>{S.layers.forEach(l=>l.vis=$('#all').checked);renderPicker();schedule()};
 
 function renderPicker(){
   const box=$('#layers'), top=box.scrollTop; box.replaceChildren();
