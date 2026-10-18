@@ -5,10 +5,9 @@ Usage:
     python _merge_ui.py [--host 127.0.0.1] [--port 0]
 
 Put this file next to your PNGs (or in a parent of the folders that hold them),
-run it, and open the printed URL.
-
-Requires: pillow. Optional: numpy + blend_modes (exact multiply blending, same
-as _merge.py; without them a Pillow-only approximation is used).
+run it, and open the printed URL. Python standard library only: compositing
+happens in the browser (canvas), the server just lists and serves files and
+maintains the outbox.
 
 Files are grouped into layers by filename: the LAST run of digits plus anything
 trailing it is the variant, everything before it is the layer name.
@@ -17,37 +16,19 @@ Layers are stacked in reverse-alphabetical order in the picker (top = first),
 which is the order _merge.py expects in its input file.
 
 The outbox is '_info.txt' in the loaded directory, in _merge.py's format.
+Existing '*' (multiply) and '@x,y' (offset) notation is preserved and rendered.
 """
 
 import argparse
-import hashlib
-import io
 import json
 import os
 import re
-import threading
-from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
-
-from PIL import Image, ImageChops
-
-try:
-    import numpy
-    from blend_modes import multiply as _bm_multiply
-    HAVE_BLEND_MODES = True
-except ImportError:
-    HAVE_BLEND_MODES = False
 
 ROOT = os.path.dirname(os.path.realpath(__file__))
 EXT = '.png'
 INFO_NAME = '_info.txt'
-CACHE_DIR = os.path.join(ROOT, '.merge_ui_cache')
-
-COMMENT_PREFIX = '#'
-MULTIPLY_SUFFIX = '*'
-PASTE_POSITION = '@'
-PASTE_POSITION_DELIM = ','
 
 
 class Err(Exception):
@@ -124,118 +105,15 @@ def list_dirs():
     return found
 
 
-# ----------------------------------------------------------------- compositing
-
-class LayerSpec:
-    def __init__(self, file, multiply, offset):
-        self.file, self.multiply, self.offset = file, multiply, offset
-
-
-def parse_line(line):
-    """Same notation as _merge.py: name[*][@x,y] # comment"""
-    line = line.split(COMMENT_PREFIX, 1)[0].strip()
-    multiply = MULTIPLY_SUFFIX in line
-    line = line.replace(MULTIPLY_SUFFIX, '')
-    file, *offset = line.split(PASTE_POSITION, 1)
-    file = file.strip()
-    if offset:
-        try:
-            offset = tuple(map(int, offset[0].split(PASTE_POSITION_DELIM, 1)))
-        except ValueError:
-            raise Err(400, 'Bad offset in line: ' + line)
-    else:
-        offset = ()
-    return LayerSpec(file, multiply, offset)
-
-
-def blend_multiply(base, new):
-    if HAVE_BLEND_MODES:
-        b = numpy.array(base).astype(float)
-        n = numpy.array(new).astype(float)
-        return Image.fromarray(numpy.uint8(_bm_multiply(b, n, 1)))
-    mult = ImageChops.multiply(base.convert('RGB'), new.convert('RGB'))
-    mixed = Image.composite(mult, base.convert('RGB'), new.getchannel('A')).convert('RGBA')
-    mixed.putalpha(base.getchannel('A'))
-    return mixed
-
-
-def compose(d, lines, maxw=None):
-    specs = [s for s in map(parse_line, lines) if s.file]
-    if not specs:
-        raise Err(400, 'No layers')
-    bottom_first = specs[::-1]
-    first = bottom_first.pop(0)
-    base = Image.open(safe_file(d, first.file)).convert('RGBA')
-    for spec in bottom_first:
-        layer = Image.open(safe_file(d, spec.file)).convert('RGBA')
-        if spec.multiply and spec.offset:
-            continue  # unsupported combination, skipped like _merge.py
-        if spec.offset:
-            tmp = Image.new('RGBA', base.size)
-            tmp.paste(layer, spec.offset)
-            base.alpha_composite(tmp)
-        elif spec.multiply:
-            base = blend_multiply(base, layer)
-        else:
-            base.alpha_composite(layer)
-    if maxw and base.width > maxw:
-        base = base.resize((maxw, round(base.height * maxw / base.width)), Image.LANCZOS)
-    buf = io.BytesIO()
-    base.save(buf, 'PNG')
-    return buf.getvalue()
-
-
-_preview_cache = OrderedDict()
-_preview_lock = threading.Lock()
-
-
-def preview_bytes(d, lines, maxw):
-    stems = [s.file for s in map(parse_line, lines) if s.file]
-    mt = tuple(os.stat(safe_file(d, s)).st_mtime_ns for s in stems)
-    key = (d, tuple(lines), maxw, mt)
-    with _preview_lock:
-        if key in _preview_cache:
-            _preview_cache.move_to_end(key)
-            return _preview_cache[key]
-    try:
-        data = compose(d, lines, maxw)
-    except Err:
-        raise
-    except Exception as exc:
-        raise Err(500, 'Could not composite: %s' % exc)
-    with _preview_lock:
-        _preview_cache[key] = data
-        while len(_preview_cache) > 32:
-            _preview_cache.popitem(last=False)
-    return data
-
-
-def thumb_bytes(d, stem):
-    path = safe_file(d, stem)
-    st = os.stat(path)
-    key = hashlib.md5(('%s|%s|%s' % (path, st.st_mtime_ns, st.st_size)).encode()).hexdigest()
-    cache_path = os.path.join(CACHE_DIR, key + '.png')
-    if os.path.exists(cache_path):
-        with open(cache_path, 'rb') as f:
-            return f.read()
-    im = Image.open(path).convert('RGBA')
-    im.thumbnail((160, 160))
-    buf = io.BytesIO()
-    im.save(buf, 'PNG')
-    data = buf.getvalue()
-    try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(cache_path, 'wb') as f:
-            f.write(data)
-    except OSError:
-        pass
-    return data
-
-
 # ---------------------------------------------------------------------- outbox
 
-def _has_file(line):
-    return bool(parse_line(line).file)
+def _strip(line):
+    return line.split('#', 1)[0].strip()
+
+
+def _file_of(line):
+    """File stem of an _info.txt line (same notation as _merge.py), or ''."""
+    return _strip(line).replace('*', '').split('@', 1)[0].strip()
 
 
 def read_blocks(d):
@@ -247,13 +125,13 @@ def read_blocks(d):
     blocks, cur = [], []
     for ln in lines:
         if not ln.strip():
-            if any(_has_file(l) for l in cur):
+            if any(_file_of(l) for l in cur):
                 blocks.append(cur)
                 cur = []
             continue
         cur.append(ln)
     if cur:
-        if any(_has_file(l) for l in cur):
+        if any(_file_of(l) for l in cur):
             blocks.append(cur)
         elif blocks:
             blocks[-1].extend(cur)  # keep trailing comments
@@ -266,19 +144,16 @@ def write_blocks(d, blocks):
 
 
 def outbox_view(blocks):
-    return {'stacks': [
-        [l.split(COMMENT_PREFIX, 1)[0].strip() for l in b if _has_file(l)]
-        for b in blocks
-    ]}
+    return {'stacks': [[_strip(l) for l in b if _file_of(l)] for b in blocks]}
 
 
 def outbox_op(d, body):
     blocks = read_blocks(d)
     op = body.get('op')
     if op == 'add':
-        lines = [str(l) for l in body.get('lines', []) if _has_file(str(l))]
+        lines = [str(l) for l in body.get('lines', []) if _file_of(str(l))]
         for l in lines:
-            safe_file(d, parse_line(l).file)
+            safe_file(d, _file_of(l))
         if lines:
             blocks.append(lines)
     elif op == 'del':
@@ -327,12 +202,9 @@ class Handler(BaseHTTPRequestHandler):
                     n = int(self.headers.get('Content-Length') or 0)
                     return self._json(outbox_op(d, json.loads(self.rfile.read(n) or b'{}')))
                 return self._json(outbox_view(read_blocks(d)))
-            if u.path == '/thumb':
-                return self._send(200, thumb_bytes(d, q.get('f', '')), 'image/png', 'max-age=60')
-            if u.path == '/preview':
-                lines = [l for l in q.get('lines', '').split('\n') if l.strip()]
-                maxw = int(q['w']) if q.get('w', '').isdigit() else None
-                return self._send(200, preview_bytes(d, lines, maxw), 'image/png', 'no-cache')
+            if u.path == '/file':
+                with open(safe_file(d, q.get('f', '')), 'rb') as f:
+                    return self._send(200, f.read(), 'image/png', 'no-cache')
             raise Err(404, 'Not found')
         except Err as e:
             self._send(e.code, str(e).encode('utf8'), 'text/plain; charset=utf-8')
@@ -357,46 +229,41 @@ PAGE = r'''<!doctype html>
 @media (prefers-color-scheme:dark){:root{--bg:#1a1e22;--panel:#23282d;--line:#394046;--fg:#e4e8eb;--mut:#8e98a1;--acc:#52c3bd;--accbg:#1d3b3a;--warn:#ff8a73}}
 *{box-sizing:border-box}[hidden]{display:none!important}
 html,body{height:100%;margin:0}
-body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font:13px/1.35 ui-sans-serif,system-ui,"Segoe UI",sans-serif}
-header{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
-header b{font-size:14px;margin-right:4px}
-#dir{flex:1;min-width:0;font:12px ui-monospace,Menlo,Consolas,monospace;padding:5px 8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg)}
-#toast{color:var(--warn);max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:4px 8px;cursor:pointer}
+body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font:14px/1.35 ui-sans-serif,system-ui,"Segoe UI",sans-serif}
+header{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+header b{font-size:15px;margin-right:4px}
+#dir{flex:1;min-width:0;height:36px;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
+#toast{color:var(--warn);max-width:35%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:5px;min-height:36px;min-width:36px;padding:0 12px;cursor:pointer}
 button:hover{border-color:var(--acc)}
 button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
-button.pri{background:var(--acc);border-color:var(--acc);color:var(--panel);font-weight:600}
-main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 430px 270px}
+button.pri{background:var(--acc);border-color:var(--acc);color:var(--panel);font-weight:600;min-height:40px;padding:0 18px}
+main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 440px 290px}
 section{min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--panel)}
 #pv{border-left:0;background:var(--bg)}
-.bar{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px;border-bottom:1px solid var(--line)}
-#stage{flex:1;min-height:0;position:relative;margin:12px;border:1px solid var(--line);
+.bar{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;border-bottom:1px solid var(--line)}
+#stage{flex:1;min-height:0;position:relative;margin:14px;border:1px solid var(--line);
  background:repeating-conic-gradient(#0000000f 0 25%,#0000 0 50%) 0 0/16px 16px}
-#img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+#cv{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
 #msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--mut);padding:20px;text-align:center}
-#info{padding:0 14px 10px;color:var(--mut)}
+#info{padding:0 16px 12px;color:var(--mut)}
 #layers,#obs{flex:1;overflow-y:auto;min-height:0}
 #picker.locked #layers,#picker.locked #send{opacity:.4;pointer-events:none}
-.row{display:flex;gap:8px;padding:6px 8px;border-bottom:1px solid var(--line)}
-.row.off .body{opacity:.4}
-.ctl{display:grid;grid-template-columns:auto auto;gap:3px;align-content:start}
-.ctl input{grid-column:1/3;margin:2px 0 2px 2px}
-.ctl button{padding:1px 0;width:24px;font-size:11px;line-height:18px}
-.ctl .mu.on{background:var(--acc);color:var(--panel);border-color:var(--acc)}
-.body{flex:1;min-width:0}
-.name{font:11px ui-monospace,Menlo,Consolas,monospace;color:var(--mut);margin-bottom:3px}
-.vars{display:flex;flex-wrap:wrap;gap:3px;max-height:158px;overflow-y:auto}
-.th{padding:2px;width:64px;display:flex;flex-direction:column;align-items:center;gap:1px;font-size:10px}
-.th img{width:58px;height:58px;object-fit:contain;background:repeating-conic-gradient(#00000014 0 25%,#0000 0 50%) 0 0/10px 10px}
-.th span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.th.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc)}
-.ob{display:grid;grid-template-columns:72px 1fr auto;gap:8px;padding:8px;border-bottom:1px solid var(--line);cursor:pointer;align-items:start}
+.row{padding:8px 10px;border-bottom:1px solid var(--line)}
+.row.off .vars{opacity:.4}
+.head{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+.head input{width:22px;height:22px;margin:0 6px 0 2px;accent-color:var(--acc)}
+.name{flex:1;min-width:0;margin-left:4px;font:600 13px ui-monospace,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vars{display:flex;flex-wrap:wrap;gap:4px;max-height:150px;overflow-y:auto}
+.fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
+.fn.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}
+.ob{display:grid;grid-template-columns:76px 1fr auto;gap:10px;padding:10px;border-bottom:1px solid var(--line);cursor:pointer;align-items:start}
 .ob.act{background:var(--accbg);box-shadow:inset 3px 0 0 var(--acc)}
-.ob img{width:72px;height:72px;object-fit:contain;background:repeating-conic-gradient(#00000014 0 25%,#0000 0 50%) 0 0/10px 10px}
-.olines{font:10.5px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow:hidden;max-height:72px;color:var(--mut)}
-.octl{display:flex;flex-direction:column;gap:3px}
-.octl button{padding:0 6px;font-size:11px}
-.empty{color:var(--mut);padding:14px}
+.ob canvas{width:76px;height:76px;object-fit:contain;background:repeating-conic-gradient(#00000014 0 25%,#0000 0 50%) 0 0/10px 10px}
+.olines{font:11px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow:hidden;max-height:76px;color:var(--mut)}
+.octl{display:flex;flex-direction:column;gap:4px}
+.octl button{min-height:30px;padding:0 10px}
+.empty{color:var(--mut);padding:16px}
 @media (max-width:900px){main{grid-template-columns:1fr;grid-auto-rows:60vh;overflow-y:auto}}
 </style></head><body>
 <header>
@@ -408,7 +275,7 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 </header>
 <main>
  <section id="pv">
-  <div id="stage"><img id="img" alt="Composite preview" hidden><div id="msg"></div></div>
+  <div id="stage"><canvas id="cv" hidden></canvas><div id="msg"></div></div>
   <div id="info"></div>
  </section>
  <section id="picker">
@@ -438,14 +305,53 @@ async function api(url,body){
 }
 function toast(m){const t=$('#toast');t.textContent=m;t.title=m;clearTimeout(toast.h);toast.h=setTimeout(()=>t.textContent='',5000)}
 
-const lineOf=l=>l.variants[l.sel][0]+(l.mult?'*':'');
-const wsLines=()=>S.layers.filter(l=>l.vis).map(lineOf);
+/* ---- compositing (browser canvas; line notation matches _merge.py) ---- */
+const imgCache=new Map();
+function loadImg(stem){
+  const k=S.dir+'\0'+stem;
+  if(!imgCache.has(k)) imgCache.set(k,new Promise((res,rej)=>{
+    const im=new Image();
+    im.onload=()=>res(im);
+    im.onerror=()=>{imgCache.delete(k);rej(new Error('Could not load '+stem+'.png'))};
+    im.src='/file?'+q({dir:S.dir,f:stem});
+  }));
+  return imgCache.get(k);
+}
+function parseLine(line){
+  let l=line.split('#',1)[0].trim();
+  const mult=l.includes('*'); l=l.replaceAll('*','');
+  const at=l.indexOf('@');
+  const file=(at<0?l:l.slice(0,at)).trim();
+  const off=at<0?null:l.slice(at+1).split(',',2).map(n=>parseInt(n,10));
+  return {file,mult,off:off&&off.length===2&&off.every(Number.isFinite)?off:null};
+}
+/* Draws lines (top-first) into canvas. Resolves true if drawn, false if stale/empty. */
+async function render(lines,canvas,maxDim,stale){
+  const specs=lines.map(parseLine).filter(s=>s.file).reverse();   // bottom first
+  if(!specs.length) return false;
+  const imgs=await Promise.all(specs.map(s=>loadImg(s.file)));
+  if(stale()) return false;
+  const base=imgs[0], W=base.naturalWidth, H=base.naturalHeight;
+  const sc=maxDim?Math.min(1,maxDim/Math.max(W,H)):1;
+  canvas.width=Math.max(1,Math.round(W*sc)); canvas.height=Math.max(1,Math.round(H*sc));
+  const c=canvas.getContext('2d');
+  c.imageSmoothingQuality='high'; c.scale(sc,sc);
+  specs.forEach((s,i)=>{
+    if(i&&s.mult&&s.off) return;                       // unsupported combo, skipped like _merge.py
+    c.globalCompositeOperation=(i&&s.mult)?'multiply':'source-over';
+    c.drawImage(imgs[i],...(s.off||[0,0]));
+  });
+  return true;
+}
+
+/* ---- workspace ---- */
+const wsLines=()=>S.layers.filter(l=>l.vis).map(l=>l.variants[l.sel][0]);
 
 async function load(dir){
   try{
     const d=await api('/api/list?'+q({dir}));
     S.dir=d.dir; $('#dir').value=d.dir;
-    S.layers=d.layers.map(l=>({...l,sel:0,vis:true,mult:false}));
+    S.layers=d.layers.map(l=>({...l,sel:0,vis:true}));
     $('#dirs').replaceChildren(...d.dirs.map(x=>h('option',{value:x})));
     S.stacks=(await api('/api/outbox?'+q({dir:S.dir}))).stacks;
     S.active=-1; renderPicker(); sync();
@@ -460,16 +366,18 @@ function renderPicker(){
   S.layers.forEach((l,i)=>{
     const row=h('div',{class:'row'+(l.vis?'':' off')});
     const cb=h('input',{type:'checkbox',checked:l.vis,title:'Show or hide layer',on:{change:()=>{l.vis=cb.checked;row.classList.toggle('off',!l.vis);count();schedule()}}});
-    const up=h('button',{textContent:'▲',title:'Move layer up',on:{click:()=>move(i,-1)}});
-    const dn=h('button',{textContent:'▼',title:'Move layer down',on:{click:()=>move(i,1)}});
-    const mu=h('button',{class:'mu'+(l.mult?' on':''),textContent:'×',title:'Multiply blend (writes * suffix)',on:{click:()=>{l.mult=!l.mult;mu.classList.toggle('on',l.mult);schedule()}}});
     const vs=h('div',{class:'vars'});
     l.variants.forEach(([stem,label],j)=>{
-      vs.append(h('button',{class:'th'+(j===l.sel?' sel':''),title:stem,on:{click:()=>{
-        l.sel=j; vs.querySelectorAll('.th').forEach((x,k)=>x.classList.toggle('sel',k===j)); schedule();
-      }}},h('img',{src:'/thumb?'+q({dir:S.dir,f:stem}),loading:'lazy',alt:''}),h('span',{textContent:label})));
+      vs.append(h('button',{class:'fn'+(j===l.sel?' sel':''),textContent:stem,title:stem,on:{click:()=>{
+        l.sel=j; vs.querySelectorAll('.fn').forEach((x,k)=>x.classList.toggle('sel',k===j)); schedule();
+      }}}));
     });
-    row.append(h('div',{class:'ctl'},cb,up,dn,mu),h('div',{class:'body'},h('div',{class:'name',textContent:l.name}),vs));
+    row.append(
+      h('div',{class:'head'},cb,
+        h('button',{textContent:'▲',title:'Move layer up',on:{click:()=>move(i,-1)}}),
+        h('button',{textContent:'▼',title:'Move layer down',on:{click:()=>move(i,1)}}),
+        h('span',{class:'name',textContent:l.name,title:l.name})),
+      vs);
     box.append(row);
   });
   box.scrollTop=top; count();
@@ -479,17 +387,20 @@ function move(i,d){
   [S.layers[i],S.layers[j]]=[S.layers[j],S.layers[i]]; renderPicker(); schedule();
 }
 
+/* ---- outbox ---- */
 async function ob(body){S.stacks=(await api('/api/outbox?'+q({dir:S.dir}),body)).stacks}
 function cbtn(label,title,fn){return h('button',{textContent:label,title,on:{click:e=>{e.stopPropagation();fn().catch(x=>toast(x.message))}}})}
 function renderOutbox(){
   const box=$('#obs'); box.replaceChildren();
   if(!S.stacks.length) box.append(h('p',{class:'empty',textContent:'Nothing here yet. Choose variants, then send the composition to the outbox.'}));
   S.stacks.forEach((lines,i)=>{
+    const cv=h('canvas');
     box.append(h('div',{class:'ob'+(i===S.active?' act':''),on:{click:()=>select(i===S.active?-1:i)}},
-      h('img',{src:'/preview?'+q({dir:S.dir,w:200,lines:lines.join('\n')}),loading:'lazy',alt:''}),
+      cv,
       h('div',{class:'olines',textContent:lines.join('\n')}),
       h('div',{class:'octl'},
         cbtn('▲','Move up',()=>shift(i,-1)),cbtn('▼','Move down',()=>shift(i,1)),cbtn('✕','Delete',()=>del(i)))));
+    render(lines,cv,160,()=>!cv.isConnected).catch(()=>{});
   });
 }
 async function shift(i,d){
@@ -511,19 +422,16 @@ function sync(){
   schedule();
 }
 
-let tok=0,tm,cur;
-function schedule(){clearTimeout(tm);tm=setTimeout(preview,40)}
+/* ---- preview ---- */
+let tok=0,tm;
+function schedule(){clearTimeout(tm);tm=setTimeout(preview,20)}
 async function preview(){
-  const t=++tok, lines=S.active>=0?S.stacks[S.active]:wsLines(), img=$('#img'), msg=$('#msg');
+  const t=++tok, lines=S.active>=0?S.stacks[S.active]:wsLines(), cv=$('#cv'), msg=$('#msg');
   $('#info').textContent=(S.active>=0?'Outbox item '+(S.active+1):'Workspace')+' · '+lines.length+' layer'+(lines.length===1?'':'s');
-  if(!lines.length){img.hidden=true;msg.textContent='No layers shown. Tick a layer to see it here.';return}
+  if(!lines.length){cv.hidden=true;msg.textContent='No layers shown. Tick a layer to see it here.';return}
   try{
-    const r=await fetch('/preview?'+q({dir:S.dir,w:1600,lines:lines.join('\n')}));
-    if(!r.ok) throw new Error(await r.text());
-    const b=await r.blob(); if(t!==tok) return;
-    const u=URL.createObjectURL(b); if(cur) URL.revokeObjectURL(cur); cur=u;
-    img.src=u; img.hidden=false; msg.textContent='';
-  }catch(e){if(t===tok){img.hidden=true;msg.textContent=e.message}}
+    if(await render(lines,cv,0,()=>t!==tok)){cv.hidden=false;msg.textContent=''}
+  }catch(e){if(t===tok){cv.hidden=true;msg.textContent=e.message}}
 }
 
 $('#send').onclick=async()=>{
@@ -547,8 +455,6 @@ def main():
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     host = 'localhost' if args.host in ('0.0.0.0', '127.0.0.1') else args.host
     print('Serving %s' % ROOT)
-    if not HAVE_BLEND_MODES:
-        print('note: numpy/blend_modes not found, using approximate multiply')
     print('Open http://%s:%d/' % (host, server.server_address[1]))
     try:
         server.serve_forever()
