@@ -4,7 +4,7 @@ _merge_ui.py: single-file, offline web UI for compositing layered PNGs.
 Usage:
     python _merge_ui.py [--host 127.0.0.1] [--port 0]
 
-Put this file next to your PNGs (or in a parent of the folders that hold them),
+Put this file in the folder that holds your PNG folders (or the PNGs themselves),
 run it, and open the printed URL. Python standard library only: compositing
 happens in the browser (canvas), the server just lists and serves files and
 maintains the outbox.
@@ -15,7 +15,9 @@ trailing it is the variant, everything before it is the layer name.
 Layers are stacked in reverse-alphabetical order in the picker (top = first),
 which is the order _merge.py expects in its input file.
 
-The outbox is '_info.txt' in the loaded directory, in _merge.py's format.
+The outbox is a single '_info.txt' next to this script, in _merge.py's format.
+Files in subfolders are written with a forward-slash path relative to the
+script, e.g. 'B001/B1_a000', so run _merge.py from this same folder.
 Existing '*' (multiply) and '@x,y' (offset) notation is preserved and rendered.
 """
 
@@ -28,7 +30,8 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = os.path.dirname(os.path.realpath(__file__))
 EXT = '.png'
-INFO_NAME = '_info.txt'
+INFO_PATH = os.path.join(ROOT, '_info.txt')
+MAX_TREE_DEPTH = 8
 
 
 class Err(Exception):
@@ -39,9 +42,9 @@ class Err(Exception):
 
 # ---------------------------------------------------------------- filesystem
 
-def resolve_dir(p):
-    """Resolve a user-supplied dir; must be ROOT or a subdirectory of it."""
-    full = os.path.realpath(os.path.join(ROOT, p or '.'))
+def resolve_dir(rel):
+    """Resolve a ROOT-relative dir; must be ROOT or a subdirectory of it."""
+    full = os.path.realpath(os.path.join(ROOT, rel or '.'))
     if full != ROOT and not full.startswith(ROOT + os.sep):
         raise Err(403, 'Directory must be inside ' + ROOT)
     if not os.path.isdir(full):
@@ -49,10 +52,18 @@ def resolve_dir(p):
     return full
 
 
-def safe_file(d, stem):
-    if not stem or stem != os.path.basename(stem) or '\\' in stem:
+def rel_of(full):
+    r = os.path.relpath(full, ROOT)
+    return '' if r == '.' else r.replace(os.sep, '/')
+
+
+def safe_file(stem):
+    """stem is a ROOT-relative path without extension, e.g. 'B001/B1_a000'."""
+    if not stem or '\\' in stem or '\0' in stem:
         raise Err(400, 'Bad file name: ' + stem)
-    path = os.path.join(d, stem + EXT)
+    path = os.path.realpath(os.path.join(ROOT, stem + EXT))
+    if not path.startswith(ROOT + os.sep):
+        raise Err(403, 'Outside root: ' + stem)
     if not os.path.isfile(path):
         raise Err(404, 'Missing file: ' + stem + EXT)
     return path
@@ -92,17 +103,27 @@ def list_layers(d):
     return out
 
 
-def list_dirs():
-    """Directories under ROOT (depth <= 3) that contain PNGs, for autocomplete."""
-    found = []
-    for cur, subs, files in os.walk(ROOT):
-        subs[:] = sorted(s for s in subs if not s.startswith('.'))
-        depth = 0 if cur == ROOT else os.path.relpath(cur, ROOT).count(os.sep) + 1
-        if depth >= 3:
-            subs[:] = []
-        if cur == ROOT or any(f.endswith(EXT) for f in files):
-            found.append(cur)
-    return found
+def build_tree():
+    """Folder tree under ROOT, pruned to folders that (transitively) hold PNGs."""
+    def walk(path, rel, depth):
+        try:
+            names = sorted(os.listdir(path), key=natkey)
+        except OSError:
+            return None
+        pngs = sum(1 for n in names if n.endswith(EXT) and not n.startswith('.'))
+        kids = []
+        if depth < MAX_TREE_DEPTH:
+            for n in names:
+                p = os.path.join(path, n)
+                if n.startswith('.') or os.path.islink(p) or not os.path.isdir(p):
+                    continue
+                k = walk(p, rel + '/' + n if rel else n, depth + 1)
+                if k:
+                    kids.append(k)
+        if rel and not pngs and not kids:
+            return None
+        return {'name': os.path.basename(path), 'rel': rel, 'n': pngs, 'kids': kids}
+    return walk(ROOT, '', 0)
 
 
 # ---------------------------------------------------------------------- outbox
@@ -116,11 +137,10 @@ def _file_of(line):
     return _strip(line).replace('*', '').split('@', 1)[0].strip()
 
 
-def read_blocks(d):
-    path = os.path.join(d, INFO_NAME)
+def read_blocks():
     lines = []
-    if os.path.exists(path):
-        with open(path, 'r', encoding='utf8') as f:
+    if os.path.exists(INFO_PATH):
+        with open(INFO_PATH, 'r', encoding='utf8') as f:
             lines = f.read().splitlines()
     blocks, cur = [], []
     for ln in lines:
@@ -138,8 +158,8 @@ def read_blocks(d):
     return blocks
 
 
-def write_blocks(d, blocks):
-    with open(os.path.join(d, INFO_NAME), 'w', encoding='utf8') as f:
+def write_blocks(blocks):
+    with open(INFO_PATH, 'w', encoding='utf8') as f:
         f.write('\n\n'.join('\n'.join(b) for b in blocks) + ('\n' if blocks else ''))
 
 
@@ -147,13 +167,13 @@ def outbox_view(blocks):
     return {'stacks': [[_strip(l) for l in b if _file_of(l)] for b in blocks]}
 
 
-def outbox_op(d, body):
-    blocks = read_blocks(d)
+def outbox_op(body):
+    blocks = read_blocks()
     op = body.get('op')
     if op == 'add':
         lines = [str(l) for l in body.get('lines', []) if _file_of(str(l))]
         for l in lines:
-            safe_file(d, _file_of(l))
+            safe_file(_file_of(l))
         if lines:
             blocks.append(lines)
     elif op == 'del':
@@ -166,7 +186,7 @@ def outbox_op(d, body):
             blocks[i], blocks[j] = blocks[j], blocks[i]
     else:
         raise Err(400, 'Unknown op')
-    write_blocks(d, blocks)
+    write_blocks(blocks)
     return outbox_view(blocks)
 
 
@@ -194,16 +214,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == '/' and not post:
                 return self._send(200, PAGE.encode('utf8'), 'text/html; charset=utf-8')
-            d = resolve_dir(q.get('dir', ''))
             if u.path == '/api/list':
-                return self._json({'dir': d, 'layers': list_layers(d), 'dirs': list_dirs()})
+                d = resolve_dir(q.get('dir', ''))
+                return self._json({'rel': rel_of(d), 'abs': d, 'layers': list_layers(d)})
+            if u.path == '/api/tree':
+                return self._json(build_tree())
             if u.path == '/api/outbox':
                 if post:
                     n = int(self.headers.get('Content-Length') or 0)
-                    return self._json(outbox_op(d, json.loads(self.rfile.read(n) or b'{}')))
-                return self._json(outbox_view(read_blocks(d)))
+                    return self._json(outbox_op(json.loads(self.rfile.read(n) or b'{}')))
+                return self._json(outbox_view(read_blocks()))
             if u.path == '/file':
-                with open(safe_file(d, q.get('f', '')), 'rb') as f:
+                with open(safe_file(q.get('f', '')), 'rb') as f:
                     return self._send(200, f.read(), 'image/png', 'no-cache')
             raise Err(404, 'Not found')
         except Err as e:
@@ -230,10 +252,16 @@ PAGE = r'''<!doctype html>
 *{box-sizing:border-box}[hidden]{display:none!important}
 html,body{height:100%;margin:0}
 body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font:14px/1.35 ui-sans-serif,system-ui,"Segoe UI",sans-serif}
-header{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+header{position:relative;display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
 header b{font-size:15px;margin-right:4px}
-#dir{flex:1;min-width:0;height:36px;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
+#dir{flex:1;min-width:0;height:36px;cursor:pointer;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
 #toast{color:var(--warn);max-width:35%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tree{position:absolute;top:100%;left:14px;z-index:10;min-width:300px;max-width:calc(100vw - 28px);max-height:65vh;overflow:auto;padding:4px;
+ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px #0004}
+.tn{display:flex;width:100%;justify-content:space-between;gap:14px;align-items:center;text-align:left;border:0;background:none;border-radius:4px;min-height:34px;font:13px ui-monospace,Menlo,Consolas,monospace}
+.tn:hover{background:var(--accbg)}
+.tn.cur{background:var(--accbg);color:var(--acc);font-weight:600}
+.tn small{color:var(--mut);font:11px ui-sans-serif,system-ui,sans-serif}
 button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:5px;min-height:36px;min-width:36px;padding:0 12px;cursor:pointer}
 button:hover{border-color:var(--acc)}
 button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
@@ -242,6 +270,10 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 440px 
 section{min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--panel)}
 #pv{border-left:0;background:var(--bg)}
 .bar{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;height:62px;flex:none;border-bottom:1px solid var(--line)}
+.grp{display:flex;gap:8px;align-items:center;flex:1;min-width:0}
+#all{width:22px;height:22px;margin:0 0 0 2px;accent-color:var(--acc)}
+#flt{flex:1;min-width:0;height:36px;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
+#flt.bad{border-color:var(--warn);outline-color:var(--warn)}
 #stage{flex:1;min-height:0;position:relative;margin:14px;border:1px solid var(--line);
  background:repeating-conic-gradient(#0000000f 0 25%,#0000 0 50%) 0 0/16px 16px}
 #cv{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
@@ -255,10 +287,6 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 .head input{width:22px;height:22px;margin:0 6px 0 2px;accent-color:var(--acc)}
 .name{flex:1;min-width:0;margin-left:4px;font:600 13px ui-monospace,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vars{display:flex;flex-wrap:wrap;gap:4px}
-.grp{display:flex;gap:8px;align-items:center;flex:1;min-width:0}
-#flt{flex:1;min-width:0;height:36px;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
-#flt.bad{border-color:var(--warn);outline-color:var(--warn)}
-#all{width:22px;height:22px;margin:0 0 0 2px;accent-color:var(--acc)}
 .fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
 .fn.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}
 .ob{display:grid;grid-template-columns:76px 1fr auto;gap:10px;padding:10px;border-bottom:1px solid var(--line);cursor:pointer;align-items:start}
@@ -272,10 +300,10 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 </style></head><body>
 <header>
  <b>merge</b>
- <input id="dir" list="dirs" spellcheck="false" aria-label="Working directory">
- <datalist id="dirs"></datalist>
- <button id="load">Load folder</button>
+ <input id="dir" readonly aria-label="Working folder (click to browse)" title="Click to browse folders">
+ <button id="browse" aria-label="Browse folders">Folders ▾</button>
  <span id="toast" role="status"></span>
+ <div id="tree" hidden></div>
 </header>
 <main>
  <section id="pv">
@@ -300,7 +328,8 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 </main>
 <script>
 const $=s=>document.querySelector(s), q=o=>new URLSearchParams(o).toString();
-const S={dir:'',layers:[],stacks:[],active:-1};
+const S={rel:'',abs:'',layers:[],stacks:[],active:-1,re:null};
+const pre=()=>S.rel?S.rel+'/':'';          // folder prefix for _info.txt lines
 
 function h(tag,props={},...kids){
   const e=document.createElement(tag);
@@ -318,15 +347,14 @@ function toast(m){const t=$('#toast');t.textContent=m;t.title=m;clearTimeout(toa
 
 /* ---- compositing (browser canvas; line notation matches _merge.py) ---- */
 const imgCache=new Map();
-function loadImg(stem){
-  const k=S.dir+'\0'+stem;
-  if(!imgCache.has(k)) imgCache.set(k,new Promise((res,rej)=>{
+function loadImg(path){
+  if(!imgCache.has(path)) imgCache.set(path,new Promise((res,rej)=>{
     const im=new Image();
     im.onload=()=>res(im);
-    im.onerror=()=>{imgCache.delete(k);rej(new Error('Could not load '+stem+'.png'))};
-    im.src='/file?'+q({dir:S.dir,f:stem});
+    im.onerror=()=>{imgCache.delete(path);rej(new Error('Could not load '+path+'.png'))};
+    im.src='/file?'+q({f:path});
   }));
-  return imgCache.get(k);
+  return imgCache.get(path);
 }
 function parseLine(line){
   let l=line.split('#',1)[0].trim();
@@ -355,21 +383,35 @@ async function render(lines,canvas,maxDim,stale){
   return true;
 }
 
-/* ---- workspace ---- */
-const wsLines=()=>S.layers.filter(l=>l.vis).map(l=>l.variants[l.sel][0]);
-
-async function load(dir){
+/* ---- folders ---- */
+async function load(rel){
   try{
-    const d=await api('/api/list?'+q({dir}));
-    S.dir=d.dir; $('#dir').value=d.dir;
+    const d=await api('/api/list?'+q({dir:rel}));
+    S.rel=d.rel; S.abs=d.abs; $('#dir').value=d.abs;
     S.layers=d.layers.map(l=>({...l,sel:0,vis:true}));
-    $('#dirs').replaceChildren(...d.dirs.map(x=>h('option',{value:x})));
-    S.stacks=(await api('/api/outbox?'+q({dir:S.dir}))).stacks;
     S.active=-1; renderPicker(); sync();
     if(!d.layers.length) toast('No .png files in this folder');
-  }catch(e){toast(e.message);$('#dir').value=S.dir}
+  }catch(e){toast(e.message)}
 }
+function drawTree(n,depth,box){
+  const b=h('button',{class:'tn'+(n.rel===S.rel?' cur':''),on:{click:()=>{$('#tree').hidden=true;load(n.rel)}}},
+    h('span',{textContent:(depth?'└ ':'')+n.name+(depth?'':'/')}),
+    h('small',{textContent:n.n?n.n+' png':''}));
+  b.style.paddingLeft=(10+depth*16)+'px';
+  box.append(b); n.kids.forEach(k=>drawTree(k,depth+1,box));
+}
+async function toggleTree(){
+  const t=$('#tree');
+  if(!t.hidden){t.hidden=true;return}
+  try{const root=await api('/api/tree'); t.replaceChildren(); drawTree(root,0,t); t.hidden=false}
+  catch(e){toast(e.message)}
+}
+$('#dir').onclick=$('#browse').onclick=toggleTree;
+document.addEventListener('click',e=>{if(!e.target.closest('#tree,#dir,#browse')) $('#tree').hidden=true});
+document.addEventListener('keydown',e=>{if(e.key==='Escape') $('#tree').hidden=true});
 
+/* ---- workspace ---- */
+const wsLines=()=>S.layers.filter(l=>l.vis).map(l=>pre()+l.variants[l.sel][0]);
 const match=l=>!S.re||S.re.test(l.name);
 function count(){
   const listed=S.layers.filter(match), n=listed.filter(l=>l.vis).length, all=$('#all');
@@ -384,7 +426,7 @@ function renderPicker(){
     const row=h('div',{class:'row'+(l.vis?'':' off')});
     const cb=h('input',{type:'checkbox',checked:l.vis,title:'Show or hide layer',on:{change:()=>{l.vis=cb.checked;row.classList.toggle('off',!l.vis);count();schedule()}}});
     const vs=h('div',{class:'vars'});
-    l.variants.forEach(([stem,label],j)=>{
+    l.variants.forEach(([stem],j)=>{
       vs.append(h('button',{class:'fn'+(j===l.sel?' sel':''),textContent:stem,title:stem,on:{click:()=>{
         l.sel=j; vs.querySelectorAll('.fn').forEach((x,k)=>x.classList.toggle('sel',k===j)); schedule();
       }}}));
@@ -405,8 +447,8 @@ function move(i,d){
   [S.layers[i],S.layers[j]]=[S.layers[j],S.layers[i]]; renderPicker(); schedule();
 }
 
-/* ---- outbox ---- */
-async function ob(body){S.stacks=(await api('/api/outbox?'+q({dir:S.dir}),body)).stacks}
+/* ---- outbox (single _info.txt, shared across folders) ---- */
+async function ob(body){S.stacks=(await api('/api/outbox',body)).stacks}
 function cbtn(label,title,fn){return h('button',{textContent:label,title,on:{click:e=>{e.stopPropagation();fn().catch(x=>toast(x.message))}}})}
 function renderOutbox(){
   const box=$('#obs'); box.replaceChildren();
@@ -464,9 +506,11 @@ $('#flt').oninput=()=>{
 };
 $('#clr').onclick=()=>{$('#flt').value=''; $('#flt').oninput(); $('#flt').focus()};
 $('#back').onclick=()=>select(-1);
-$('#load').onclick=()=>load($('#dir').value.trim());
-$('#dir').addEventListener('keydown',e=>{if(e.key==='Enter')load($('#dir').value.trim())});
-load('');
+
+(async()=>{
+  try{S.stacks=(await api('/api/outbox')).stacks}catch(e){toast(e.message)}
+  await load('');
+})();
 </script></body></html>
 '''
 
