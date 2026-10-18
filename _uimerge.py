@@ -247,8 +247,8 @@ PAGE = r'''<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>merge</title>
 <style>
-:root{--bg:#e8ebee;--panel:#f6f7f8;--line:#cdd2d7;--fg:#1d2328;--mut:#68727c;--acc:#0e6a68;--accbg:#d3ebe9;--warn:#a2331f}
-@media (prefers-color-scheme:dark){:root{--bg:#1a1e22;--panel:#23282d;--line:#394046;--fg:#e4e8eb;--mut:#8e98a1;--acc:#52c3bd;--accbg:#1d3b3a;--warn:#ff8a73}}
+:root{--bg:#e8ebee;--panel:#f6f7f8;--line:#cdd2d7;--fg:#1d2328;--mut:#68727c;--acc:#0e6a68;--accbg:#d3ebe9;--warn:#a2331f;--ob:#6b3fa0;--obbg:#e7ddf4}
+@media (prefers-color-scheme:dark){:root{--bg:#1a1e22;--panel:#23282d;--line:#394046;--fg:#e4e8eb;--mut:#8e98a1;--acc:#52c3bd;--accbg:#1d3b3a;--warn:#ff8a73;--ob:#b794f0;--obbg:#31234b}}
 *{box-sizing:border-box}[hidden]{display:none!important}
 html,body{height:100%;margin:0}
 body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font:14px/1.35 ui-sans-serif,system-ui,"Segoe UI",sans-serif}
@@ -280,7 +280,7 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 #msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--mut);padding:20px;text-align:center}
 #info{padding:0 16px 12px;color:var(--mut)}
 #layers,#obs{flex:1;overflow-y:auto;min-height:0}
-#picker.locked #layers,#picker.locked .bar{opacity:.4;pointer-events:none}
+#picker.locked #layers,#picker.locked .grp{opacity:.4;pointer-events:none}
 .row{padding:8px 10px;border-bottom:1px solid var(--line)}
 .row.off .vars{opacity:.4}
 .head{display:flex;gap:6px;align-items:center;margin-bottom:6px}
@@ -290,7 +290,11 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 .fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
 .fn.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}
 .ob{display:grid;grid-template-columns:76px 1fr auto;gap:10px;padding:10px;border-bottom:1px solid var(--line);cursor:pointer;align-items:start}
-.ob.act{background:var(--accbg);box-shadow:inset 3px 0 0 var(--acc)}
+.ob.act{background:var(--obbg);box-shadow:inset 3px 0 0 var(--ob)}
+#outbox .bar b{color:var(--ob)}
+#outbox button:hover{border-color:var(--ob)}
+#outbox button:focus-visible{outline-color:var(--ob)}
+button.pri.purple{background:var(--ob);border-color:var(--ob)}
 .ob canvas{width:76px;height:76px;object-fit:contain;background:repeating-conic-gradient(#00000014 0 25%,#0000 0 50%) 0 0/10px 10px}
 .olines{font:11px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre;overflow:hidden;max-height:76px;color:var(--mut)}
 .octl{display:flex;flex-direction:column;gap:4px}
@@ -479,6 +483,9 @@ function sync(){
   renderOutbox();
   $('#picker').classList.toggle('locked',S.active>=0);
   $('#back').hidden=S.active<0;
+  const send=$('#send');
+  send.textContent=S.active>=0?'Load from outbox':'Send to outbox';
+  send.classList.toggle('purple',S.active>=0);
   schedule();
 }
 
@@ -494,7 +501,36 @@ async function preview(){
   }catch(e){if(t===tok){cv.hidden=true;msg.textContent=e.message}}
 }
 
+/* Replace the picker state with the selected outbox entry. */
+async function loadFromOutbox(){
+  const specs=(S.stacks[S.active]||[]).map(parseLine).filter(s=>s.file).map(s=>{
+    const k=s.file.lastIndexOf('/');
+    return {...s,dir:k<0?'':s.file.slice(0,k),stem:s.file.slice(k+1)};
+  });
+  if(!specs.length) return;
+  const dir=specs[0].dir;                       // the entry's top layer decides the folder
+  await load(dir);                              // fresh state: default order, all shown, first variants
+  if(S.rel!==dir) return;
+  let skipped=0, dropped=false; const order=[];
+  specs.forEach(s=>{
+    if(s.mult||s.off) dropped=true;
+    const li=S.layers.findIndex(l=>l.variants.some(v=>v[0]===s.stem));
+    if(s.dir!==dir||li<0||order.includes(li)){skipped++;return}
+    S.layers[li].sel=S.layers[li].variants.findIndex(v=>v[0]===s.stem);
+    order.push(li);
+  });
+  S.layers.forEach(l=>l.vis=false);
+  order.forEach(li=>S.layers[li].vis=true);
+  const slots=[...order].sort((a,b)=>a-b), picked=order.map(li=>S.layers[li]), out=[...S.layers];
+  slots.forEach((slot,k)=>out[slot]=picked[k]);   // entry's layer order, hidden layers keep their slots
+  S.layers=out; S.active=-1; renderPicker(); sync();
+  const notes=[];
+  if(skipped) notes.push(skipped+' line'+(skipped===1?'':'s')+' skipped');
+  if(dropped) notes.push('multiply/offset not editable here');
+  toast(notes.length?'Loaded; '+notes.join(', '):'Loaded from outbox');
+}
 $('#send').onclick=async()=>{
+  if(S.active>=0) return loadFromOutbox();
   const lines=wsLines(); if(!lines.length) return toast('Show at least one layer first');
   try{await ob({op:'add',lines}); sync(); toast('Sent to outbox')}catch(e){toast(e.message)}
 };
