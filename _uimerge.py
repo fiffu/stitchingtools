@@ -241,21 +241,23 @@ button.pri{background:var(--acc);border-color:var(--acc);color:var(--panel);font
 main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 440px 290px}
 section{min-height:0;display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--panel)}
 #pv{border-left:0;background:var(--bg)}
-.bar{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;border-bottom:1px solid var(--line)}
+.bar{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px;height:62px;flex:none;border-bottom:1px solid var(--line)}
 #stage{flex:1;min-height:0;position:relative;margin:14px;border:1px solid var(--line);
  background:repeating-conic-gradient(#0000000f 0 25%,#0000 0 50%) 0 0/16px 16px}
 #cv{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
 #msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--mut);padding:20px;text-align:center}
 #info{padding:0 16px 12px;color:var(--mut)}
 #layers,#obs{flex:1;overflow-y:auto;min-height:0}
-#picker.locked #layers,#picker.locked .grp{opacity:.4;pointer-events:none}
+#picker.locked #layers,#picker.locked .bar{opacity:.4;pointer-events:none}
 .row{padding:8px 10px;border-bottom:1px solid var(--line)}
 .row.off .vars{opacity:.4}
 .head{display:flex;gap:6px;align-items:center;margin-bottom:6px}
 .head input{width:22px;height:22px;margin:0 6px 0 2px;accent-color:var(--acc)}
 .name{flex:1;min-width:0;margin-left:4px;font:600 13px ui-monospace,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vars{display:flex;flex-wrap:wrap;gap:4px}
-.grp{display:flex;gap:12px;align-items:center}
+.grp{display:flex;gap:8px;align-items:center;flex:1;min-width:0}
+#flt{flex:1;min-width:0;height:36px;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
+#flt.bad{border-color:var(--warn);outline-color:var(--warn)}
 #all{width:22px;height:22px;margin:0 0 0 2px;accent-color:var(--acc)}
 .fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
 .fn.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}
@@ -281,7 +283,14 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
   <div id="info"></div>
  </section>
  <section id="picker">
-  <div class="bar"><div class="grp"><input type="checkbox" id="all" title="Show or hide all layers"><button id="send" class="pri">Send to outbox</button></div><span id="count"></span></div>
+  <div class="bar">
+   <div class="grp">
+    <input type="checkbox" id="all" title="Show or hide all listed layers">
+    <input id="flt" placeholder="Filter layers (regex)" spellcheck="false" aria-label="Filter layers by regex">
+    <button id="clr" title="Clear filter">✕</button>
+   </div>
+   <button id="send" class="pri">Send to outbox</button>
+  </div>
   <div id="layers"></div>
  </section>
  <section id="outbox">
@@ -361,16 +370,17 @@ async function load(dir){
   }catch(e){toast(e.message);$('#dir').value=S.dir}
 }
 
+const match=l=>!S.re||S.re.test(l.name);
 function count(){
-  const n=S.layers.filter(l=>l.vis).length, all=$('#all');
-  $('#count').textContent=n+' of '+S.layers.length+' layers shown';
-  all.checked=n>0&&n===S.layers.length; all.indeterminate=n>0&&n<S.layers.length;
+  const listed=S.layers.filter(match), n=listed.filter(l=>l.vis).length, all=$('#all');
+  all.checked=n>0&&n===listed.length; all.indeterminate=n>0&&n<listed.length;
 }
-$('#all').onchange=()=>{S.layers.forEach(l=>l.vis=$('#all').checked);renderPicker();schedule()};
+$('#all').onchange=()=>{S.layers.filter(match).forEach(l=>l.vis=$('#all').checked);renderPicker();schedule()};
 
 function renderPicker(){
   const box=$('#layers'), top=box.scrollTop; box.replaceChildren();
   S.layers.forEach((l,i)=>{
+    if(!match(l)) return;
     const row=h('div',{class:'row'+(l.vis?'':' off')});
     const cb=h('input',{type:'checkbox',checked:l.vis,title:'Show or hide layer',on:{change:()=>{l.vis=cb.checked;row.classList.toggle('off',!l.vis);count();schedule()}}});
     const vs=h('div',{class:'vars'});
@@ -381,16 +391,17 @@ function renderPicker(){
     });
     row.append(
       h('div',{class:'head'},cb,
+        h('span',{class:'name',textContent:l.name,title:l.name}),
         h('button',{textContent:'▲',title:'Move layer up',on:{click:()=>move(i,-1)}}),
-        h('button',{textContent:'▼',title:'Move layer down',on:{click:()=>move(i,1)}}),
-        h('span',{class:'name',textContent:l.name,title:l.name})),
+        h('button',{textContent:'▼',title:'Move layer down',on:{click:()=>move(i,1)}})),
       vs);
     box.append(row);
   });
   box.scrollTop=top; count();
 }
 function move(i,d){
-  const j=i+d; if(j<0||j>=S.layers.length) return;
+  let j=i+d; while(j>=0&&j<S.layers.length&&!match(S.layers[j])) j+=d;
+  if(j<0||j>=S.layers.length) return;
   [S.layers[i],S.layers[j]]=[S.layers[j],S.layers[i]]; renderPicker(); schedule();
 }
 
@@ -445,6 +456,13 @@ $('#send').onclick=async()=>{
   const lines=wsLines(); if(!lines.length) return toast('Show at least one layer first');
   try{await ob({op:'add',lines}); sync(); toast('Sent to outbox')}catch(e){toast(e.message)}
 };
+$('#flt').oninput=()=>{
+  const el=$('#flt');
+  try{S.re=el.value?new RegExp(el.value,'i'):null; el.classList.remove('bad')}
+  catch{el.classList.add('bad'); return}
+  renderPicker();
+};
+$('#clr').onclick=()=>{$('#flt').value=''; $('#flt').oninput(); $('#flt').focus()};
 $('#back').onclick=()=>select(-1);
 $('#load').onclick=()=>load($('#dir').value.trim());
 $('#dir').addEventListener('keydown',e=>{if(e.key==='Enter')load($('#dir').value.trim())});
