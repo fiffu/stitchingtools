@@ -259,8 +259,8 @@ header b{font-size:15px;margin-right:4px}
 #tree{position:absolute;top:100%;left:14px;z-index:10;min-width:300px;max-width:calc(100vw - 28px);max-height:65vh;overflow:auto;padding:4px;
  background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px #0004}
 .tn{display:flex;width:100%;justify-content:space-between;gap:14px;align-items:center;text-align:left;border:0;background:none;border-radius:4px;min-height:34px;font:13px ui-monospace,Menlo,Consolas,monospace}
-.tn:hover{background:var(--accbg)}
-.tn.cur{background:var(--accbg);color:var(--acc);font-weight:600}
+.tn:hover{background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.tn.cur{background:color-mix(in srgb,var(--fg) 12%,transparent);font-weight:600}
 .tn small{color:var(--mut);font:11px ui-sans-serif,system-ui,sans-serif}
 button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:5px;min-height:36px;min-width:36px;padding:0 12px;cursor:pointer}
 button:hover{border-color:var(--acc)}
@@ -282,10 +282,19 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 #layers,#obs{flex:1;overflow-y:auto;min-height:0}
 #picker.locked #layers,#picker.locked .grp{opacity:.4;pointer-events:none}
 .row{padding:8px 10px;border-bottom:1px solid var(--line)}
-.row.off .vars{opacity:.4}
+.row.off .vars,.row.off .name{opacity:.4}
 .head{display:flex;gap:6px;align-items:center;margin-bottom:6px}
 .head input{width:22px;height:22px;margin:0 6px 0 2px;accent-color:var(--acc)}
-.name{flex:1;min-width:0;margin-left:4px;font:600 13px ui-monospace,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.name{flex:1;min-width:0;margin-left:-2px;font:600 13px ui-monospace,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;user-select:none;padding:7px 6px;border-radius:4px}
+.name:hover{background:color-mix(in srgb,var(--fg) 6%,transparent)}
+.more{display:none;align-self:center;padding:0 6px;color:var(--mut);font:600 15px ui-monospace,Menlo,Consolas,monospace}
+.row.collapsed .more{display:inline}
+.row.collapsed .fn:not(.sel),.row.collapsed.off .fn{display:none}
+.row.collapsed{display:flex;align-items:center;gap:6px}
+.row.collapsed .head{display:contents}
+.row.collapsed .name{order:1;flex:0 1 auto;max-width:60%}
+.row.collapsed .vars{order:2;flex:1 0 auto;flex-wrap:nowrap;align-items:center}
+.row.collapsed .head button{order:3}
 .vars{display:flex;flex-wrap:wrap;gap:4px}
 .fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
 .fn.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}
@@ -427,7 +436,8 @@ function renderPicker(){
   const box=$('#layers'), top=box.scrollTop; box.replaceChildren();
   S.layers.forEach((l,i)=>{
     if(!match(l)) return;
-    const row=h('div',{class:'row'+(l.vis?'':' off')});
+    const row=h('div',{class:'row'+(l.vis?'':' off')+(l.collapsed?' collapsed':'')});
+    const toggle=()=>{l.collapsed=!l.collapsed;row.classList.toggle('collapsed',l.collapsed)};
     const cb=h('input',{type:'checkbox',checked:l.vis,title:'Show or hide layer',on:{change:()=>{l.vis=cb.checked;row.classList.toggle('off',!l.vis);count();schedule()}}});
     const vs=h('div',{class:'vars'});
     l.variants.forEach(([stem],j)=>{
@@ -435,9 +445,11 @@ function renderPicker(){
         l.sel=j; vs.querySelectorAll('.fn').forEach((x,k)=>x.classList.toggle('sel',k===j)); schedule();
       }}}));
     });
+    vs.append(h('span',{class:'more',textContent:'…'}));
     row.append(
       h('div',{class:'head'},cb,
-        h('span',{class:'name',textContent:l.name,title:l.name}),
+        h('span',{class:'name',textContent:l.name,tabIndex:0,
+          on:{click:toggle,keydown:e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle()}}}}),
         h('button',{textContent:'▲',title:'Move layer up',on:{click:()=>move(i,-1)}}),
         h('button',{textContent:'▼',title:'Move layer down',on:{click:()=>move(i,1)}})),
       vs);
