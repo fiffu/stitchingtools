@@ -27,6 +27,9 @@ Keyboard mode: Space starts it and highlights the top layer. Up/Down pick a laye
 Left/Right pick its variant, PgUp/PgDn move it up or down the stack, Enter shows or hides it, d shows or hides all
 listed layers, \ (backslash) sends the stack to the outbox, f edits the filter, g edits the
 grouping pattern (Enter commits and returns to keyboard mode). Esc, Space or a click ends it.
+Outbox keys (outside text inputs): Backspace selects the bottom outbox item, or goes back to the
+workspace if one is selected. Up/Down walk the items. Delete removes the selected item and selects
+the one above it, or returns to the workspace when none are left.
 Ctrl+K opens the folder picker with the current folder focused (Up/Down move, Enter opens, Esc closes).
 """
 
@@ -37,7 +40,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = '2026-11-23.10 (keyboard mode, backslash sends)'
+VERSION = '2026-11-23.12 (outbox keys)'
 ROOT = os.path.dirname(os.path.realpath(__file__))
 EXT = '.png'
 INFO_PATH = os.path.join(ROOT, '_info.txt')
@@ -289,8 +292,9 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 .row.collapsed .head button{order:3}
 .row.kb{outline:2px solid var(--acc);outline-offset:-2px;background:color-mix(in srgb,var(--acc) 10%,transparent)}
 .vars{display:flex;flex-wrap:wrap;gap:4px}
-#kbhint{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:20;display:flex;flex-wrap:wrap;justify-content:center;gap:6px 18px;
+#kbhint{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:20;display:flex;flex-direction:column;align-items:center;gap:6px;
  max-width:calc(100vw - 28px);padding:10px 16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0005;pointer-events:none}
+#kbhint div{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 18px}
 #kbhint span{white-space:nowrap;color:var(--mut)}
 #kbhint kbd{font:600 12px ui-monospace,Menlo,Consolas,monospace;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;margin-right:4px}
 .fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
@@ -339,15 +343,20 @@ button.pri.purple{background:var(--ob);border-color:var(--ob)}
  </section>
 </main>
 <div id="kbhint" role="status" hidden>
- <span><kbd>↑</kbd><kbd>↓</kbd>layer</span>
- <span><kbd>←</kbd><kbd>→</kbd>variant</span>
- <span><kbd>PgUp</kbd><kbd>PgDn</kbd>move layer</span>
- <span><kbd>Enter</kbd>show/hide</span>
- <span><kbd>d</kbd>toggle all</span>
- <span><kbd>\</kbd>send to outbox</span>
- <span><kbd>f</kbd>filter</span>
- <span><kbd>g</kbd>grouping</span>
- <span><kbd>Esc</kbd>exit</span>
+ <div>
+  <span><kbd>↑</kbd><kbd>↓</kbd>layer</span>
+  <span><kbd>←</kbd><kbd>→</kbd>variant</span>
+  <span><kbd>PgUp</kbd><kbd>PgDn</kbd>move layer</span>
+  <span><kbd>Enter</kbd>show/hide</span>
+ </div>
+ <div>
+  <span><kbd>\</kbd>send to outbox</span>
+  <span><kbd>BkSp</kbd>go to outbox</span>
+  <span><kbd>d</kbd>toggle all</span>
+  <span><kbd>f</kbd>filter</span>
+  <span><kbd>g</kbd>grouping</span>
+  <span><kbd>Esc</kbd>exit</span>
+ </div>
 </div>
 <script>
 const $=s=>document.querySelector(s), q=o=>new URLSearchParams(o).toString();
@@ -553,6 +562,25 @@ document.addEventListener('keydown',e=>{
     e.preventDefault(); e.stopPropagation(); exitKb(); document.activeElement?.blur(); openTree();
   }
 },true);
+let delBusy=false;
+/* Returns true if the key was an outbox command. */
+function obKey(e){
+  const n=S.stacks.length;
+  if(e.key==='Backspace'){
+    if(S.active<0&&!n) return false;
+    if(!e.repeat) select(S.active>=0?-1:n-1);
+    return true;
+  }
+  if(S.active<0) return false;
+  if(e.key==='ArrowUp'||e.key==='ArrowDown') select(Math.max(0,Math.min(n-1,S.active+(e.key==='ArrowUp'?-1:1))));
+  else if(e.key==='Delete'){
+    if(e.repeat||delBusy) return true;               // a held key must not delete several items
+    delBusy=true; const i=S.active;
+    ob({op:'del',i}).then(()=>{S.active=S.stacks.length?Math.max(0,i-1):-1; sync()})
+      .catch(x=>toast(x.message)).finally(()=>delBusy=false);
+  }else return false;
+  return true;
+}
 const isText=t=>t.matches('input:not([type=checkbox]),textarea,select');
 document.addEventListener('keydown',e=>{
   const t=e.target;
@@ -564,6 +592,7 @@ document.addEventListener('keydown',e=>{
     return;
   }
   if(e.ctrlKey||e.metaKey||e.altKey) return;
+  if(!t.closest('#tree')&&obKey(e)){exitKb(); e.preventDefault(); e.stopPropagation(); return}
   if(!K.on){
     if(e.key===' '){e.preventDefault(); e.stopPropagation(); document.activeElement?.blur(); enterKb()}
     return;
@@ -608,6 +637,7 @@ function renderOutbox(){
         cbtn('▲','Move up',()=>shift(i,-1)),cbtn('▼','Move down',()=>shift(i,1)),cbtn('✕','Delete',()=>del(i)))));
     render(lines,cv,160,()=>!cv.isConnected).catch(()=>{});
   });
+  box.querySelector('.ob.act')?.scrollIntoView({block:'nearest'});
 }
 async function shift(i,d){
   const j=i+d; if(j<0||j>=S.stacks.length) return;
