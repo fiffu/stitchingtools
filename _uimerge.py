@@ -22,6 +22,11 @@ The outbox is a single '_info.txt' next to this script, in _merge.py's format.
 Files in subfolders are written with a forward-slash path relative to the
 script, e.g. 'B001/B1_a000', so run _merge.py from this same folder.
 Existing '*' (multiply) and '@x,y' (offset) notation is preserved and rendered.
+
+Keyboard mode: Space starts it and highlights the top layer. Up/Down pick a layer,
+Left/Right pick its variant, PgUp/PgDn move it up or down the stack, Enter shows or hides it, f edits the filter, g edits the
+grouping pattern (Enter commits and returns to keyboard mode). Esc, Space or a click ends it.
+Ctrl+K opens the folder picker with the current folder focused (Up/Down move, Enter opens, Esc closes).
 """
 
 import argparse
@@ -31,7 +36,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = '2026-11-15.2 (regex grouping)'
+VERSION = '2026-11-23.6 (keyboard mode, ctrl-k, pgup/pgdn)'
 ROOT = os.path.dirname(os.path.realpath(__file__))
 EXT = '.png'
 INFO_PATH = os.path.join(ROOT, '_info.txt')
@@ -238,6 +243,7 @@ body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);fon
 header{position:relative;display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
 header b{font-size:15px;margin-right:4px}
 #dir{flex:1;min-width:0;height:36px;cursor:pointer;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
+#flt:focus,#pat:focus{border-color:var(--acc)}
 #pat{width:min(30%,300px);flex:none;height:36px;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
 #pat.bad{border-color:var(--warn);outline-color:var(--warn)}
 #toast{color:var(--warn);max-width:35%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -280,6 +286,7 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 .row.collapsed .name{order:1;flex:0 1 auto;max-width:60%}
 .row.collapsed .vars{order:2;flex:1 0 auto;flex-wrap:nowrap;align-items:center}
 .row.collapsed .head button{order:3}
+.row.kb{outline:2px solid var(--acc);outline-offset:-2px;background:color-mix(in srgb,var(--acc) 10%,transparent)}
 .vars{display:flex;flex-wrap:wrap;gap:4px}
 .fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
 .fn.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}
@@ -455,9 +462,23 @@ async function toggleTree(){
   try{const root=await api('/api/tree'); t.replaceChildren(); drawTree(root,0,t); t.hidden=false}
   catch(e){toast(e.message)}
 }
+async function openTree(){            // Ctrl+K: show the tree if hidden, then focus the current folder
+  if($('#tree').hidden) await toggleTree();
+  ($('#tree .cur')||$('#tree .tn'))?.focus();
+}
+$('#tree').addEventListener('keydown',e=>{
+  const d=e.key==='ArrowDown'?1:e.key==='ArrowUp'?-1:0; if(!d) return;
+  e.preventDefault();
+  const b=[...$('#tree').querySelectorAll('.tn')], i=b.indexOf(document.activeElement);
+  b[Math.max(0,Math.min(b.length-1,i+d))]?.focus();
+});
 $('#dir').onclick=$('#browse').onclick=toggleTree;
 document.addEventListener('click',e=>{if(!e.target.closest('#tree,#dir,#browse')) $('#tree').hidden=true});
-document.addEventListener('keydown',e=>{if(e.key==='Escape') $('#tree').hidden=true});
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  if($('#tree').contains(document.activeElement)) document.activeElement.blur();
+  $('#tree').hidden=true;
+});
 
 /* ---- workspace ---- */
 const wsLines=()=>S.layers.filter(l=>l.vis).map(l=>pre()+l.variants[l.sel][0]);
@@ -472,7 +493,7 @@ function renderPicker(){
   const box=$('#layers'), top=box.scrollTop; box.replaceChildren();
   S.layers.forEach((l,i)=>{
     if(!match(l)) return;
-    const row=h('div',{class:'row'+(l.vis?'':' off')+(l.collapsed?' collapsed':'')});
+    const row=h('div',{class:'row'+(l.vis?'':' off')+(l.collapsed?' collapsed':'')+(K.on&&K.l===l?' kb':'')});
     const toggle=()=>{l.collapsed=!l.collapsed;row.classList.toggle('collapsed',l.collapsed)};
     const cb=h('input',{type:'checkbox',checked:l.vis,title:'Show or hide layer',on:{change:()=>{l.vis=cb.checked;row.classList.toggle('off',!l.vis);count();schedule()}}});
     const vs=h('div',{class:'vars'});
@@ -492,12 +513,64 @@ function renderPicker(){
     box.append(row);
   });
   box.scrollTop=top; count();
+  box.querySelector('.row.kb')?.scrollIntoView({block:'nearest'});
 }
 function move(i,d){
   let j=i+d; while(j>=0&&j<S.layers.length&&!match(S.layers[j])) j+=d;
   if(j<0||j>=S.layers.length) return;
   [S.layers[i],S.layers[j]]=[S.layers[j],S.layers[i]]; renderPicker(); schedule();
 }
+
+/* ---- keyboard mode: Space toggles; Up/Down layer, Left/Right variant, PgUp/PgDn reorder, Enter show/hide, f filter, g grouping, Esc exit ---- */
+const K={on:false,l:null};
+function enterKb(){
+  if(S.active>=0) return;                       // picker is locked while an outbox item is open
+  K.on=true; K.l=S.layers.find(match)||null; renderPicker();
+}
+function exitKb(){
+  K.on=false;
+  document.querySelectorAll('.row.kb').forEach(r=>r.classList.remove('kb'));   // no re-render: it would swallow the click that ended the mode
+}
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&!e.altKey&&e.key.toLowerCase()==='k'){
+    e.preventDefault(); e.stopPropagation(); exitKb(); document.activeElement?.blur(); openTree();
+  }
+},true);
+const isText=t=>t.matches('input:not([type=checkbox]),textarea,select');
+document.addEventListener('keydown',e=>{
+  const t=e.target;
+  if(isText(t)){
+    if(t.id==='flt'||t.id==='pat'){
+      if(e.key==='Enter'){e.preventDefault(); t.blur(); enterKb()}
+      else if(e.key==='Escape') t.blur();
+    }
+    return;
+  }
+  if(e.ctrlKey||e.metaKey||e.altKey) return;
+  if(!K.on){
+    if(e.key===' '){e.preventDefault(); e.stopPropagation(); document.activeElement?.blur(); enterKb()}
+    return;
+  }
+  const L=S.layers.filter(match), i=Math.max(0,L.indexOf(K.l)), l=K.l, key=e.key.length===1?e.key.toLowerCase():e.key;
+  let used=true;
+  switch(key){
+    case ' ': case 'Escape': exitKb(); break;
+    case 'ArrowUp': case 'ArrowDown':
+      K.l=L[Math.max(0,Math.min(L.length-1,i+(key==='ArrowUp'?-1:1)))]||null; renderPicker(); break;
+    case 'ArrowLeft': case 'ArrowRight':
+      if(l){l.sel=Math.max(0,Math.min(l.variants.length-1,l.sel+(key==='ArrowLeft'?-1:1))); renderPicker(); schedule()} break;
+    case 'PageUp': case 'PageDown':
+      if(l) move(S.layers.indexOf(l),key==='PageUp'?-1:1); break;
+    case 'Enter':
+      if(l){l.vis=!l.vis; renderPicker(); schedule()} break;
+    case 'f': case 'g': {
+      exitKb(); const el=$(key==='f'?'#flt':'#pat'); el.focus(); el.select(); break;
+    }
+    default: used=false;
+  }
+  if(used){e.preventDefault(); e.stopPropagation()}
+},true);
+document.addEventListener('pointerdown',()=>{if(K.on) exitKb()},true);
 
 /* ---- outbox (single _info.txt, shared across folders) ---- */
 async function ob(body){S.stacks=(await api('/api/outbox',body)).stacks}
