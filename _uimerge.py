@@ -24,7 +24,8 @@ script, e.g. 'B001/B1_a000', so run _merge.py from this same folder.
 Existing '*' (multiply) and '@x,y' (offset) notation is preserved and rendered.
 
 Keyboard mode: Space starts it and highlights the top layer. Up/Down pick a layer,
-Left/Right pick its variant, PgUp/PgDn move it up or down the stack, Enter shows or hides it, f edits the filter, g edits the
+Left/Right pick its variant, PgUp/PgDn move it up or down the stack, Enter shows or hides it, d shows or hides all
+listed layers, \ (backslash) sends the stack to the outbox, f edits the filter, g edits the
 grouping pattern (Enter commits and returns to keyboard mode). Esc, Space or a click ends it.
 Ctrl+K opens the folder picker with the current folder focused (Up/Down move, Enter opens, Esc closes).
 """
@@ -36,7 +37,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = '2026-11-23.6 (keyboard mode, ctrl-k, pgup/pgdn)'
+VERSION = '2026-11-23.10 (keyboard mode, backslash sends)'
 ROOT = os.path.dirname(os.path.realpath(__file__))
 EXT = '.png'
 INFO_PATH = os.path.join(ROOT, '_info.txt')
@@ -288,6 +289,10 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 .row.collapsed .head button{order:3}
 .row.kb{outline:2px solid var(--acc);outline-offset:-2px;background:color-mix(in srgb,var(--acc) 10%,transparent)}
 .vars{display:flex;flex-wrap:wrap;gap:4px}
+#kbhint{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:20;display:flex;flex-wrap:wrap;justify-content:center;gap:6px 18px;
+ max-width:calc(100vw - 28px);padding:10px 16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #0005;pointer-events:none}
+#kbhint span{white-space:nowrap;color:var(--mut)}
+#kbhint kbd{font:600 12px ui-monospace,Menlo,Consolas,monospace;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;margin-right:4px}
 .fn{min-height:30px;padding:0 9px;font:12.5px ui-monospace,Menlo,Consolas,monospace}
 .fn.sel{border-color:var(--acc);background:var(--accbg);box-shadow:inset 0 0 0 1px var(--acc);font-weight:600}
 .ob{display:grid;grid-template-columns:76px 1fr auto;gap:10px;padding:10px;border-bottom:1px solid var(--line);cursor:pointer;align-items:start}
@@ -333,6 +338,17 @@ button.pri.purple{background:var(--ob);border-color:var(--ob)}
   <div id="obs"></div>
  </section>
 </main>
+<div id="kbhint" role="status" hidden>
+ <span><kbd>↑</kbd><kbd>↓</kbd>layer</span>
+ <span><kbd>←</kbd><kbd>→</kbd>variant</span>
+ <span><kbd>PgUp</kbd><kbd>PgDn</kbd>move layer</span>
+ <span><kbd>Enter</kbd>show/hide</span>
+ <span><kbd>d</kbd>toggle all</span>
+ <span><kbd>\</kbd>send to outbox</span>
+ <span><kbd>f</kbd>filter</span>
+ <span><kbd>g</kbd>grouping</span>
+ <span><kbd>Esc</kbd>exit</span>
+</div>
 <script>
 const $=s=>document.querySelector(s), q=o=>new URLSearchParams(o).toString();
 console.log('[merge] version __VERSION__');
@@ -521,14 +537,15 @@ function move(i,d){
   [S.layers[i],S.layers[j]]=[S.layers[j],S.layers[i]]; renderPicker(); schedule();
 }
 
-/* ---- keyboard mode: Space toggles; Up/Down layer, Left/Right variant, PgUp/PgDn reorder, Enter show/hide, f filter, g grouping, Esc exit ---- */
+/* ---- keyboard mode: Space toggles; Up/Down layer, Left/Right variant, PgUp/PgDn reorder, Enter show/hide, d all, \ send, f filter, g grouping, Esc exit ---- */
 const K={on:false,l:null};
 function enterKb(){
   if(S.active>=0) return;                       // picker is locked while an outbox item is open
   K.on=true; K.l=S.layers.find(match)||null; renderPicker();
+  $('#kbhint').hidden=false;
 }
 function exitKb(){
-  K.on=false;
+  K.on=false; $('#kbhint').hidden=true;
   document.querySelectorAll('.row.kb').forEach(r=>r.classList.remove('kb'));   // no re-render: it would swallow the click that ended the mode
 }
 document.addEventListener('keydown',e=>{
@@ -563,12 +580,16 @@ document.addEventListener('keydown',e=>{
       if(l) move(S.layers.indexOf(l),key==='PageUp'?-1:1); break;
     case 'Enter':
       if(l){l.vis=!l.vis; renderPicker(); schedule()} break;
+    case '\\': $('#send').click(); break;
+    case 'd': {
+      const on=!L.every(x=>x.vis); L.forEach(x=>x.vis=on); renderPicker(); schedule(); break;
+    }
     case 'f': case 'g': {
       exitKb(); const el=$(key==='f'?'#flt':'#pat'); el.focus(); el.select(); break;
     }
     default: used=false;
   }
-  if(used){e.preventDefault(); e.stopPropagation()}
+  if(used){e.preventDefault(); e.stopPropagation(); $('#kbhint').hidden=true}
 },true);
 document.addEventListener('pointerdown',()=>{if(K.on) exitKb()},true);
 
