@@ -1,4 +1,4 @@
-"""
+r"""
 _merge_ui.py: single-file, offline web UI for compositing layered PNGs.
 
 Usage:
@@ -9,9 +9,12 @@ run it, and open the printed URL. Python standard library only: compositing
 happens in the browser (canvas), the server just lists and serves files and
 maintains the outbox.
 
-Files are grouped into layers by filename: the LAST run of digits plus anything
-trailing it is the variant, everything before it is the layer name.
+Files are grouped into layers by a regex you edit in the page header. Capture
+group 1 (or a group named 'layer') is the layer name; group 2 (or a group named
+'variant') is the variant label. The default is '^(.*?)(\d+\D*)$', i.e. the LAST
+run of digits plus anything trailing it is the variant:
     B1_i000_2p -> layer 'B1_i000_', variant '2p'
+Files the pattern doesn't match become single-file layers.
 Layers are stacked in reverse-alphabetical order in the picker (top = first),
 which is the order _merge.py expects in its input file.
 
@@ -28,6 +31,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+VERSION = '2026-11-15.2 (regex grouping)'
 ROOT = os.path.dirname(os.path.realpath(__file__))
 EXT = '.png'
 INFO_PATH = os.path.join(ROOT, '_info.txt')
@@ -69,38 +73,16 @@ def safe_file(stem):
     return path
 
 
-# ------------------------------------------------------------------ grouping
-
-# Edit this to change how files are grouped into layers/variants.
-# Returns (layer_name, variant_label, sort_key).
-_SPLIT = re.compile(r'^(.*?)(\d+)(\D*)$')
-
-
-def split_stem(stem):
-    m = _SPLIT.match(stem)
-    if not m:
-        return stem, stem, (0, 0, '')
-    pre, digits, tail = m.groups()
-    return pre, digits + tail, (int(digits), len(digits), tail)
-
+# ------------------------------------------------------------------- listing
 
 def natkey(s):
     return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', s)]
 
 
-def list_layers(d):
-    groups = {}
-    for fn in os.listdir(d):
-        if fn.startswith('.') or not fn.endswith(EXT):
-            continue
-        stem = fn[:-len(EXT)]
-        name, label, key = split_stem(stem)
-        groups.setdefault(name, []).append((key, stem, label))
-    out = []
-    for name in sorted(groups, key=natkey, reverse=True):
-        variants = sorted(groups[name])
-        out.append({'name': name, 'variants': [[s, l] for _, s, l in variants]})
-    return out
+def list_files(d):
+    """PNG stems (no extension) in d. Grouping into layers happens in the browser."""
+    return sorted((fn[:-len(EXT)] for fn in os.listdir(d)
+                   if fn.endswith(EXT) and not fn.startswith('.')), key=natkey)
 
 
 def build_tree():
@@ -213,10 +195,11 @@ class Handler(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
         try:
             if u.path == '/' and not post:
-                return self._send(200, PAGE.encode('utf8'), 'text/html; charset=utf-8')
+                return self._send(200, PAGE.replace('__VERSION__', VERSION).encode('utf8'),
+                                  'text/html; charset=utf-8', 'no-store')
             if u.path == '/api/list':
                 d = resolve_dir(q.get('dir', ''))
-                return self._json({'rel': rel_of(d), 'abs': d, 'layers': list_layers(d)})
+                return self._json({'rel': rel_of(d), 'abs': d, 'files': list_files(d)})
             if u.path == '/api/tree':
                 return self._json(build_tree())
             if u.path == '/api/outbox':
@@ -245,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
 PAGE = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>merge</title>
+<title>merge v__VERSION__</title>
 <style>
 :root{--bg:#e8ebee;--panel:#f6f7f8;--line:#cdd2d7;--fg:#1d2328;--mut:#68727c;--acc:#0e6a68;--accbg:#d3ebe9;--warn:#a2331f;--ob:#6b3fa0;--obbg:#e7ddf4;--bar:#d6dbe0}
 @media (prefers-color-scheme:dark){:root{--bg:#1a1e22;--panel:#23282d;--line:#394046;--fg:#e4e8eb;--mut:#8e98a1;--acc:#52c3bd;--accbg:#1d3b3a;--warn:#ff8a73;--ob:#b794f0;--obbg:#31234b;--bar:#171b1f}}
@@ -255,6 +238,8 @@ body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);fon
 header{position:relative;display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
 header b{font-size:15px;margin-right:4px}
 #dir{flex:1;min-width:0;height:36px;cursor:pointer;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
+#pat{width:min(30%,300px);flex:none;height:36px;font:13px ui-monospace,Menlo,Consolas,monospace;padding:0 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
+#pat.bad{border-color:var(--warn);outline-color:var(--warn)}
 #toast{color:var(--warn);max-width:35%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #tree{position:absolute;top:100%;left:14px;z-index:10;min-width:300px;max-width:calc(100vw - 28px);max-height:65vh;overflow:auto;padding:4px;
  background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px #0004}
@@ -276,7 +261,7 @@ section{min-height:0;display:flex;flex-direction:column;border-left:1px solid va
 #flt.bad{border-color:var(--warn);outline-color:var(--warn)}
 #stage{flex:1;min-height:0;position:relative;margin:14px;border:1px solid var(--line);
  background:repeating-conic-gradient(#0000000f 0 25%,#0000 0 50%) 0 0/16px 16px}
-#cv{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+#cv{position:absolute;inset:0;width:100%;height:100%;object-fit:scale-down}
 #msg{position:absolute;inset:0;display:grid;place-items:center;color:var(--mut);padding:20px;text-align:center}
 #info{padding:0 16px 12px;color:var(--mut)}
 #layers,#obs{flex:1;overflow-y:auto;min-height:0}
@@ -312,9 +297,11 @@ button.pri.purple{background:var(--ob);border-color:var(--ob)}
 @media (max-width:900px){main{grid-template-columns:1fr;grid-auto-rows:60vh;overflow-y:auto}}
 </style></head><body>
 <header>
- <b>merge</b>
+ <b>merge <small id="ver" style="font-weight:400;color:var(--mut)">v__VERSION__</small></b>
  <input id="dir" readonly aria-label="Working folder (click to browse)" title="Click to browse folders">
  <button id="browse" aria-label="Browse folders">Folders ▾</button>
+ <input id="pat" spellcheck="false" aria-label="Layer grouping pattern (regex)" title="Grouping regex: group 1 = layer name, group 2 = variant (or named groups 'layer' and 'variant')">
+ <button id="patreset" title="Reset grouping pattern" aria-label="Reset grouping pattern">↺</button>
  <span id="toast" role="status"></span>
  <div id="tree" hidden></div>
 </header>
@@ -341,7 +328,8 @@ button.pri.purple{background:var(--ob);border-color:var(--ob)}
 </main>
 <script>
 const $=s=>document.querySelector(s), q=o=>new URLSearchParams(o).toString();
-const S={rel:'',abs:'',layers:[],stacks:[],active:-1,re:null};
+console.log('[merge] version __VERSION__');
+const S={rel:'',abs:'',files:[],layers:[],stacks:[],active:-1,re:null};
 const pre=()=>S.rel?S.rel+'/':'';          // folder prefix for _info.txt lines
 
 function h(tag,props={},...kids){
@@ -396,14 +384,62 @@ async function render(lines,canvas,maxDim,stale){
   return true;
 }
 
+/* ---- grouping: the user's regex decides layer vs variant ---- */
+const DEFAULT_PAT='^(.*?)(\\d+\\D*)$';
+function loadPat(){try{return localStorage.getItem('merge.pat')||DEFAULT_PAT}catch{return DEFAULT_PAT}}
+function savePat(v){try{v===DEFAULT_PAT?localStorage.removeItem('merge.pat'):localStorage.setItem('merge.pat',v)}catch{}}
+let patRe;
+{
+  let v=loadPat();
+  try{patRe=new RegExp(v)}catch{v=DEFAULT_PAT;patRe=new RegExp(v)}
+  $('#pat').value=v;
+}
+/* stems -> [{name,variants:[[stem,label]],sel,vis}], top layer first */
+function group(files){
+  const by=new Map();
+  for(const stem of files){
+    const m=patRe.exec(stem);
+    let name=stem,label=stem;
+    if(m){
+      const g=m.groups||{};
+      name=g.layer||m[1]||m[0]||stem;
+      label=g.variant||m[2]||(stem.startsWith(name)&&stem.length>name.length?stem.slice(name.length):stem);
+    }
+    if(!by.has(name)) by.set(name,[]);
+    by.get(name).push([stem,label]);
+  }
+  const cmp=(a,b)=>a.localeCompare(b,undefined,{numeric:true});
+  return [...by].sort((a,b)=>cmp(b[0],a[0])).map(([name,vs])=>({
+    name,sel:0,vis:true,
+    variants:vs.sort((a,b)=>cmp(a[1],b[1])||cmp(a[0],b[0])),
+  }));
+}
+/* Regroup after a pattern change, keeping visibility, collapse and selection where the layer name survives. */
+function regroup(){
+  const old=new Map(S.layers.map(l=>[l.name,l]));
+  S.layers=group(S.files).map(l=>{
+    const o=old.get(l.name); if(!o) return l;
+    const j=l.variants.findIndex(v=>v[0]===o.variants[o.sel]?.[0]);
+    return {...l,vis:o.vis,collapsed:o.collapsed,sel:j<0?0:j};
+  });
+  renderPicker(); schedule();
+}
+$('#pat').oninput=()=>{
+  const el=$('#pat');
+  try{patRe=new RegExp(el.value); el.classList.remove('bad')}
+  catch{el.classList.add('bad'); return}
+  savePat(el.value); regroup();
+};
+$('#patreset').onclick=()=>{$('#pat').value=DEFAULT_PAT; $('#pat').oninput()};
+
 /* ---- folders ---- */
 async function load(rel){
   try{
     const d=await api('/api/list?'+q({dir:rel}));
     S.rel=d.rel; S.abs=d.abs; $('#dir').value=d.abs;
-    S.layers=d.layers.map(l=>({...l,sel:0,vis:true}));
+    S.files=d.files; S.layers=group(S.files);
     S.active=-1; renderPicker(); sync();
-    if(!d.layers.length) toast('No .png files in this folder');
+    if(!d.files.length) toast('No .png files in this folder');
   }catch(e){toast(e.message)}
 }
 function drawTree(n,depth,box){
@@ -569,8 +605,18 @@ def main():
     ap.add_argument('--port', type=int, default=0, help='default=0 (pick a free port)')
     args = ap.parse_args()
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    class Server(ThreadingHTTPServer):
+        # On Windows, SO_REUSEADDR lets a second process bind a port that is already
+        # in use (silently). Turn it off there so a busy port is an error instead.
+        allow_reuse_address = os.name != 'nt'
+
+    try:
+        server = Server((args.host, args.port), Handler)
+    except OSError as e:
+        raise SystemExit('Cannot bind %s:%d (%s). Is another instance running? '
+                         'Use --port 0 to pick a free port.' % (args.host, args.port, e))
     host = 'localhost' if args.host in ('0.0.0.0', '127.0.0.1') else args.host
+    print('_merge_ui.py v%s' % VERSION)
     print('Serving %s' % ROOT)
     print('Open http://%s:%d/' % (host, server.server_address[1]))
     try:
